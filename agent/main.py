@@ -48,6 +48,11 @@ def facts():
 
 
 def proxy_endpoint():
+    # Explicit non-secret override for installations where Telemt config is root-readable only.
+    override_host = os.environ.get("AUTOIP_PUBLIC_HOST", "").strip() or None
+    override_port = os.environ.get("AUTOIP_PROXY_PORT")
+    if override_host:
+        return override_host, int(override_port) if override_port else 443
     try:
         cfg = tomllib.loads(TELEMT_PATH.read_text())
         return (cfg.get("general", {}).get("links", {}).get("public_host"),

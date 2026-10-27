@@ -16,3 +16,5 @@ Agent service user needs read access to /etc/telemt/telemt.toml to discover publ
 The installer intentionally does NOT authorize root helper or apply ad tags by default. Do not enable writes on production before code audit, privilege setup, hot reload and rollback testing.
 
 Agent identity stored under /var/lib/autoip-agent/identity.json (0600). Never commit or share its contents.
+
+Alternatively set AUTOIP_PUBLIC_HOST and AUTOIP_PROXY_PORT in /etc/autoip-agent/agent.env without allowing the service user to read secrets in the Telemt config.
