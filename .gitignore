@@ -1,0 +1,17 @@
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.venv/
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+*.sqlite3
+*.db
+secrets/
+state/
+.DS_Store
+node_modules/
+dist/
+coverage/

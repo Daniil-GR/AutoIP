@@ -1,0 +1,21 @@
+[Unit]
+Description=AutoIP Remote Agent
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=autoip-agent
+Group=autoip-agent
+EnvironmentFile=/etc/autoip-agent/agent.env
+WorkingDirectory=/opt/AutoIP
+ExecStart=/opt/AutoIP/.venv/bin/python -m agent.main run
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/autoip-agent
+CapabilityBoundingSet=
+[Install]
+WantedBy=multi-user.target

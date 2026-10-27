@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: autoip
+      POSTGRES_USER: autoip
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autoip -d autoip"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  commander:
+    build:
+      context: .
+      dockerfile: commander/Dockerfile
+    restart: unless-stopped
+    environment:
+      AUTOIP_ADMIN_USER: ${AUTOIP_ADMIN_USER:-admin}
+      AUTOIP_ADMIN_PASSWORD: ${AUTOIP_ADMIN_PASSWORD:?Set AUTOIP_ADMIN_PASSWORD in .env}
+      AUTOIP_DATABASE_URL: postgresql+psycopg://autoip:${POSTGRES_PASSWORD}@db:5432/autoip
+      AUTOIP_TELEGRAM_BOT_TOKEN: ${AUTOIP_TELEGRAM_BOT_TOKEN:-}
+      AUTOIP_TELEGRAM_CHAT_ID: ${AUTOIP_TELEGRAM_CHAT_ID:-}
+      AUTOIP_MONITOR_ENABLED: ${AUTOIP_MONITOR_ENABLED:-false}
+      AUTOIP_MONITOR_INTERVAL_SECONDS: ${AUTOIP_MONITOR_INTERVAL_SECONDS:-180}
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  postgres_data:
