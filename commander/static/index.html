@@ -130,11 +130,42 @@ function details(a){
  const status=node("button","Запросить статус","btn secondary");status.onclick=async()=>{try{await api("/api/agents/"+a.id+"/jobs",{method:"POST",body:JSON.stringify({kind:"status"})});showToast("Задание отправлено")}catch(e){showToast(e.message)}};
  const check=node("button","Проверить из РФ","btn secondary");check.onclick=async()=>{showToast("Запущена проверка...");try{const r=await api("/api/agents/"+a.id+"/check",{method:"POST"});showToast("Проверка: "+r.status)}catch(e){showToast(e.message)}};
  const pause=node("button",a.paused?"Возобновить":"Приостановить","btn secondary");pause.onclick=async()=>{try{await api("/api/agents/"+a.id+"/pause",{method:"POST"});$("modal").classList.remove("show");refresh()}catch(e){showToast(e.message)}};
- actions.append(status,check,pause);b.append(actions);
+ const configure=node("button","Настройки агента","btn secondary");configure.onclick=()=>editConfiguration(a);actions.append(status,check,pause,configure);b.append(actions);
  const output=node("pre","Загрузка последних заданий...");
  b.append(output);
  api("/api/agents/"+a.id+"/jobs").then(jobs=>output.textContent=JSON.stringify(jobs,null,2)).catch(e=>output.textContent=e.message);
  $("action").style.display="none";
+}
+async function editConfiguration(a){
+  modal("Настройки: "+a.name,"Параметры сохраняются на Commander. Ключи API и пароли в этих полях не сохраняйте.");
+  try{
+    const saved=await api("/api/agents/"+a.id+"/configuration");
+    const schema=[
+      ["provider","Провайдер (cherry или other)"],
+      ["region","Регион"],
+      ["cherry_project_id","Cherry Project ID"],
+      ["cherry_server_id","Cherry Server ID"],
+      ["sponsor_channel","Ссылка публичного Telegram-канала"],
+      ["max_candidates_per_incident","Максимум IP на инцидент"],
+      ["notes","Примечания"]
+    ];
+    const inputs={};
+    for(const [key,title] of schema){
+      const wrapper=node("div","","field");wrapper.append(node("label",title));
+      const input=document.createElement("input");input.value=saved[key]??"";input.type=key==="max_candidates_per_incident"?"number":"text";inputs[key]=input;
+      wrapper.append(input);$("dialogBody").append(wrapper);
+    }
+    $("action").style.display="inline-block";$("action").textContent="Сохранить";
+    $("action").onclick=async()=>{
+      try{
+        const payload={};
+        for(const [key] of schema)payload[key]=key==="max_candidates_per_incident"?Number(inputs[key].value):inputs[key].value.trim();
+        const response=await api("/api/agents/"+a.id+"/configuration",{method:"PUT",body:JSON.stringify(payload)});
+        showToast("Настройки сохранены");
+        $("modal").classList.remove("show");refresh();
+      }catch(e){showToast(e.message)}
+    };
+  }catch(e){showToast(e.message)}
 }
 $("close").onclick=()=>{$("modal").classList.remove("show");$("action").onclick=null};
 $("modal").onclick=e=>{if(e.target===$("modal"))$("modal").classList.remove("show")};

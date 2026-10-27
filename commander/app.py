@@ -65,6 +65,16 @@ class Heartbeat(BaseModel):
     proxy_port: int = Field(default=443, ge=1, le=65535)
 
 
+class AgentConfiguration(BaseModel):
+    provider: Literal["cherry", "other"] = "cherry"
+    region: str = Field(default="", max_length=80)
+    cherry_project_id: str = Field(default="", max_length=100)
+    cherry_server_id: str = Field(default="", max_length=100)
+    sponsor_channel: str = Field(default="", max_length=250)
+    notes: str = Field(default="", max_length=800)
+    max_candidates_per_incident: int = Field(default=3, ge=1, le=10)
+
+
 class JobCreate(BaseModel):
     kind: Literal["status", "apply_ad_tag"]
     ad_tag: str | None = None
@@ -80,6 +90,7 @@ def serialize_agent(a: Agent):
         "id": a.id, "name": a.name, "public_host": a.public_host,
         "proxy_port": a.proxy_port, "facts": a.facts,
         "last_seen": a.last_seen, "created_at": a.created_at,
+        "configuration": a.configuration or {},
         "paused": a.paused, "online": bool(a.last_seen and (utcnow() - aware(a.last_seen)).total_seconds() < 90),
     }
 
@@ -256,6 +267,24 @@ def new_job(agent_id: str, body: JobCreate, _: str = Depends(admin), db: Session
     db.add(job)
     db.commit()
     return {"job_id": job.id, "status": job.status}
+
+
+@app.get("/api/agents/{agent_id}/configuration")
+def get_configuration(agent_id: str, _: str = Depends(admin), db: Session = Depends(get_db)):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return AgentConfiguration(**(agent.configuration or {}))
+
+
+@app.put("/api/agents/{agent_id}/configuration")
+def set_configuration(agent_id: str, body: AgentConfiguration, _: str = Depends(admin), db: Session = Depends(get_db)):
+    agent = db.get(Agent, agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    agent.configuration = body.model_dump()
+    db.commit()
+    return {"saved": True, "configuration": agent.configuration}
 
 
 @app.post("/api/agents/{agent_id}/pause")
