@@ -4,3 +4,9 @@ sqlalchemy==2.0.40
 psycopg[binary]==3.2.6
 httpx==0.28.1
 pydantic-settings==2.8.1
+alembic==1.18.4
+cryptography==46.0.5
+aiogram==3.26.0
+Telethon==1.42.0
+dnspython==2.8.0
+pyotp==2.9.0

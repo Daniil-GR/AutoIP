@@ -15,3 +15,7 @@ state/
 node_modules/
 dist/
 coverage/
+.playwright/
+artifacts/
+.local-test/
+backups/

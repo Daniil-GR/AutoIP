@@ -5,14 +5,28 @@ on:
 jobs:
   python:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: autoip_test
+          POSTGRES_PASSWORD: isolated-test-password
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d autoip_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
     env:
-      AUTOIP_ADMIN_PASSWORD: testing-only-password-123
-      AUTOIP_DATABASE_URL: sqlite:///./autoip-ci.sqlite3
+      AUTOIP_TEST_POSTGRES_URL: postgresql+psycopg://postgres:isolated-test-password@127.0.0.1:5432/autoip_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install -r commander/requirements.txt -r agent/requirements.txt pytest
-      - run: python -m compileall -q commander agent
+      - run: python -m pip install -r commander/requirements.txt -r agent/requirements.txt -r requirements-dev.txt
+      - run: ruff check commander agent tests scripts
+      - run: ruff format --check commander agent tests scripts migrations
+      - run: python -m compileall -q commander agent migrations
+      - run: node --check commander/static/app.js
       - run: python -m pytest -q
+      - run: playwright install --with-deps chromium
+      - run: python scripts/browser-smoke.py

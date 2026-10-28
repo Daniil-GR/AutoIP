@@ -1,0 +1,8 @@
+*
+!commander/
+!commander/**
+!migrations/
+!migrations/**
+!alembic.ini
+**/__pycache__/
+**/*.pyc

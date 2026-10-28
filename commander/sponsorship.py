@@ -1,0 +1,319 @@
+"""Conservative MTProxybot dialog adapter, isolated from proxy availability.
+
+Only explicit local operator approval can start a new registration. The live
+bot interface is unverified; any unexpected message stops the conversation.
+"""
+
+import asyncio
+import hashlib
+import re
+from contextlib import contextmanager
+
+from sqlalchemy import text
+from telethon import TelegramClient
+from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.sessions import StringSession
+
+from .database import (
+    Integration,
+    Job,
+    Notification,
+    SessionLocal,
+    Sponsorship,
+    engine,
+    utcnow,
+)
+from .security import audit
+from .services import require_agent
+from .vault import decrypt, encrypt
+
+
+class ManualRequired(RuntimeError):
+    pass
+
+
+def parse_tag(message, secret):
+    # Never mistake a user secret echoed in a proxy URL for the promotion tag.
+    candidates = re.findall(
+        r"(?:\btag\b|тег|ad_tag)[\s\S]{0,80}?\b([0-9a-fA-F]{32})\b", message, flags=re.I
+    )
+    candidates = {
+        value.lower() for value in candidates if value.lower() != secret.lower()
+    }
+    if len(candidates) != 1:
+        raise ManualRequired("MTProxybot: не найден однозначный рекламный тег")
+    return candidates.pop()
+
+
+def expects(message, kind):
+    patterns = {
+        "endpoint": r"(?:ip.?address|ip\s*:\s*port|ip.*port|адрес.*порт)",
+        "secret": r"(?:\bsecret\b|секрет)",
+        "channel": r"(?:channel|канал)",
+        "promotion_saved": r"(?:promotion.*(?:set|updated)|(?:set|updated).*promotion|канал.*(?:установлен|назначен))",
+    }
+    lower = message.lower()
+    return not re.search(r"\b(?:error|invalid|failed)\b|ошибк|неверн", lower) and bool(
+        re.search(patterns[kind], lower)
+    )
+
+
+def matching_button(message, predicate):
+    options = [
+        (row, column)
+        for row, buttons in enumerate(message.buttons or [])
+        for column, button in enumerate(buttons)
+        if predicate(button.text)
+    ]
+    if len(options) != 1:
+        raise ManualRequired(
+            "MTProxybot: интерфейс выбора изменился или результат неоднозначен"
+        )
+    return options[0]
+
+
+async def register(conversation, endpoint, secret, checkpoint):
+    await checkpoint("REGISTRATION_SUBMITTING")
+    await conversation.send_message("/newproxy")
+    prompt = await conversation.get_response()
+    if not expects(prompt.raw_text, "endpoint"):
+        raise ManualRequired("MTProxybot: неизвестный запрос IP:PORT")
+    await conversation.send_message(endpoint)
+    prompt = await conversation.get_response()
+    if not expects(prompt.raw_text, "secret"):
+        raise ManualRequired("MTProxybot: не получен ожидаемый запрос секрета")
+    await conversation.send_message(secret)
+    prompt = await conversation.get_response()
+    tag = parse_tag(prompt.raw_text, secret)
+    await checkpoint("REGISTERED", tag)
+    return tag
+
+
+async def promote(conversation, endpoint, channel):
+    await conversation.send_message("/myproxies")
+    proxies = await conversation.get_response()
+    row, column = matching_button(
+        proxies,
+        lambda label: endpoint == label.strip()
+        or label.strip().endswith(" " + endpoint),
+    )
+    await proxies.click(row, column)
+    selected = await conversation.get_response()
+    row, column = matching_button(
+        selected,
+        lambda label: label.strip().lower()
+        in ("set promotion", "назначить канал", "установить спонсора"),
+    )
+    await selected.click(row, column)
+    prompt = await conversation.get_response()
+    if not expects(prompt.raw_text, "channel"):
+        raise ManualRequired("MTProxybot: не получен ожидаемый запрос канала")
+    await conversation.send_message(channel)
+    response = await conversation.get_response()
+    if not expects(response.raw_text, "promotion_saved"):
+        raise ManualRequired("MTProxybot: сохранение канала требует ручной проверки")
+
+
+@contextmanager
+def account_lock(identifier):
+    if engine.dialect.name != "postgresql":
+        raise ManualRequired(
+            "Реальная работа Telethon требует PostgreSQL для блокировки диалогов"
+        )
+    lock_id = int.from_bytes(
+        hashlib.sha256(("telethon:" + identifier).encode()).digest()[:8],
+        "big",
+        signed=True,
+    )
+    with engine.connect() as connection:
+        locked = connection.execute(
+            text("SELECT pg_try_advisory_lock(:key)"), {"key": lock_id}
+        ).scalar()
+        if not locked:
+            raise ManualRequired("Telegram-аккаунт уже используется другой операцией")
+        try:
+            yield
+        finally:
+            connection.execute(
+                text("SELECT pg_advisory_unlock(:key)"), {"key": lock_id}
+            )
+
+
+async def authorize_local(name):
+    """Interactive authorization; never prints StringSession or asks in Telegram chat."""
+    import getpass
+    from uuid import uuid4
+
+    api_id = int(getpass.getpass("Telegram api_id (скрытый ввод): "))
+    api_hash = getpass.getpass("Telegram api_hash (скрытый ввод): ")
+    phone = getpass.getpass("Телефон отдельного Telegram-аккаунта (скрытый ввод): ")
+    client = TelegramClient(StringSession(), api_id, api_hash)
+    try:
+        await client.connect()
+        code = await client.send_code_request(phone)
+        try:
+            await client.sign_in(
+                phone,
+                getpass.getpass("Код Telegram (скрытый ввод): "),
+                phone_code_hash=code.phone_code_hash,
+            )
+        except SessionPasswordNeededError:
+            await client.sign_in(
+                password=getpass.getpass("Пароль 2FA Telegram (скрытый ввод): ")
+            )
+        if not await client.is_user_authorized():
+            raise ManualRequired("Авторизация Telegram не завершена")
+        identifier = str(uuid4())
+        credentials = {
+            "api_id": str(api_id),
+            "api_hash": api_hash,
+            "session": client.session.save(),
+        }
+        with SessionLocal() as db:
+            db.add(
+                Integration(
+                    id=identifier,
+                    name=name,
+                    kind="telethon",
+                    ciphertext=encrypt(identifier, "telethon", credentials),
+                    metadata_json={},
+                    status="verified",
+                )
+            )
+            audit(db, "local-admin", "telethon_authorized", identifier)
+            db.commit()
+        print("Telegram-аккаунт авторизован, зашифрованная интеграция ID:", identifier)
+    finally:
+        await client.disconnect()
+
+
+async def sponsor_agent(agent_id, approve_new_registration=False):
+    with SessionLocal() as db:
+        agent = require_agent(db, agent_id)
+        config = agent.configuration or {}
+        account = db.get(Integration, config.get("telethon_integration_id", ""))
+        user_secret = db.get(Integration, config.get("mtproto_integration_id", ""))
+        if (
+            not account
+            or account.kind != "telethon"
+            or not user_secret
+            or user_secret.kind != "mtproto"
+        ):
+            raise ManualRequired("Нужны отдельные Telethon и MTProto secret интеграции")
+        ip, channel = config.get("floating_ip"), config.get("sponsor_channel")
+        if not ip or not channel:
+            raise ManualRequired("Не настроены Floating IP и спонсорский канал")
+        endpoint = f"{ip}:{agent.proxy_port}"
+        account_id, credentials = account.id, decrypt(account)
+        secret = decrypt(user_secret)["secret"]
+    with account_lock(account_id):
+        with SessionLocal() as db:
+            state = db.get(Sponsorship, agent_id)
+            if state and state.status in (
+                "REGISTERING",
+                "REGISTRATION_SUBMITTING",
+                "REGISTRATION_UNCERTAIN",
+            ):
+                raise ManualRequired(
+                    "Результат предыдущей регистрации неизвестен: проверьте MTProxybot вручную"
+                )
+            existing_tag = (
+                state.ad_tag
+                if state and state.details.get("endpoint") == endpoint
+                else None
+            )
+            if not existing_tag and not approve_new_registration:
+                raise ManualRequired(
+                    "Требуется отдельное подтверждение новой регистрации"
+                )
+            if not state:
+                state = Sponsorship(agent_id=agent_id)
+                db.add(state)
+            state.ad_tag = existing_tag
+            state.status = "REGISTERED" if existing_tag else "REGISTERING"
+            state.details = {"endpoint": endpoint, "account_id": account_id}
+            db.commit()
+
+        async def checkpoint(status, tag=None):
+            with SessionLocal() as db:
+                state = db.get(Sponsorship, agent_id)
+                state.status, state.updated_at = status, utcnow()
+                if tag:
+                    state.ad_tag = tag
+                db.commit()
+
+        client = TelegramClient(
+            StringSession(credentials["session"]),
+            int(credentials["api_id"]),
+            credentials["api_hash"],
+        )
+        try:
+            await client.connect()
+            if not await client.is_user_authorized():
+                raise ManualRequired("Telegram-аккаунт требует повторной авторизации")
+            async with client.conversation(
+                "MTProxybot", timeout=30, exclusive=True
+            ) as conversation:
+                tag = existing_tag or await register(
+                    conversation, endpoint, secret, checkpoint
+                )
+                await promote(conversation, endpoint, channel)
+            with SessionLocal() as db:
+                current = require_agent(db, agent_id, lock=True)
+                if (current.configuration or {}).get("floating_ip") != ip:
+                    raise ManualRequired("IP агента изменился во время диалога")
+                state = db.get(Sponsorship, agent_id)
+                state.status, state.updated_at = "AD_TAG_PENDING", utcnow()
+                db.add(
+                    Job(agent_id=agent_id, kind="apply_ad_tag", payload={"ad_tag": tag})
+                )
+                audit(db, "local-admin", "sponsorship_tag_queued", agent_id)
+                db.add(
+                    Notification(
+                        topic="sponsorship",
+                        target=agent_id,
+                        text=f"{current.name}: MTProxybot подтвердил регистрацию и канал. ad_tag поставлен в очередь; применение ещё не проверено.",
+                    )
+                )
+                db.commit()
+        except (ManualRequired, asyncio.TimeoutError, FloodWaitError) as error:
+            with SessionLocal() as db:
+                state = db.get(Sponsorship, agent_id)
+                state.status = (
+                    "PROMOTION_MANUAL_REQUIRED"
+                    if state.ad_tag
+                    else "REGISTRATION_UNCERTAIN"
+                )
+                state.details = {
+                    **state.details,
+                    "retry_after_seconds": error.seconds
+                    if isinstance(error, FloodWaitError)
+                    else None,
+                }
+                state.updated_at = utcnow()
+                db.add(
+                    Notification(
+                        topic="sponsorship_error",
+                        target=agent_id,
+                        text="Спонсорство требует ручной проверки MTProxybot. Работа прокси не остановлена.",
+                    )
+                )
+                db.commit()
+            raise ManualRequired(
+                "Спонсорство не завершено. Проверьте MTProxybot вручную; повторная регистрация заблокирована"
+            ) from None
+        except Exception:
+            # Connection may have failed after a message was sent. Preserve uncertainty.
+            with SessionLocal() as db:
+                state = db.get(Sponsorship, agent_id)
+                state.status = (
+                    "PROMOTION_MANUAL_REQUIRED"
+                    if state.ad_tag
+                    else "REGISTRATION_UNCERTAIN"
+                )
+                db.commit()
+            raise ManualRequired(
+                "Неизвестный результат диалога: требуется ручная сверка MTProxybot"
+            ) from None
+        finally:
+            await client.disconnect()

@@ -17,3 +17,10 @@ install -m 0644 "$ROOT_DIR/agent/autoip-agent.service" /etc/systemd/system/autoi
 # No sudo privileges are installed automatically.
 systemctl daemon-reload
 echo "Installed. Edit /etc/autoip-agent/agent.env, enroll as autoip-agent, then systemctl enable --now autoip-agent."
+# Optional read-only discovery broker. Does not grant the polling agent root privileges.
+if [[ "${1:-}" == "--with-config-reader" ]]; then
+  install -m 0644 "$ROOT_DIR/agent/autoip-telemt-helper.socket" /etc/systemd/system/
+  install -m 0644 "$ROOT_DIR/agent/autoip-telemt-helper@.service" /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now autoip-telemt-helper.socket
+fi

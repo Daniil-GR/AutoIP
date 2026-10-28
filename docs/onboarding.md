@@ -1,14 +1,13 @@
-# Multi-agent onboarding
+# Подключение и настройка агента
 
-Commander dashboard includes Add agent and settings editor.
+1. В панели создайте одноразовый код на 15 минут.
+2. На новом сервере Agent проверьте установщик и установите `/opt/AutoIP` по `agent-installation.md`.
+3. Адрес Commander задайте в `/etc/autoip-agent/agent.env`. Выполните показанную команду enroll-local; код вводится скрыто и не попадает в shell history.
+4. После heartbeat мастер показывает подключение. В карточке агента откройте настройки: Management IP, Floating IP, Cherry/DNS интеграции, проект/сервер, зону/запись, канал и лимиты.
+5. Общие интеграции выбираются из списка, ключи повторно вводить не требуется. Cherry inventory позволяет получить Project ID чтением.
+6. Сохраните параметры и проверьте список готовности. Неполные настройки сохраняются, но восстановление с ними заблокировано.
+7. Запустите проверку. Она выполняется отдельным worker, результат отображается в мониторинге.
 
-1. Generate a short-lived enrollment token. Token is displayed only once.
-2. Install agent on another VPS and connect it to the Commander HTTPS URL.
-3. Agent reports hostname, OS and Telemt facts if readable.
-4. Open the agent detail panel and choose Настройки агента.
-5. Save provider, Cherry project/server IDs, region, sponsoring channel and maximum candidates.
-6. Values are stored as JSON in Commander PostgreSQL. These are **nonsecret metadata**.
-7. Do not enter Cherry API tokens, Telegram session keys, passwords, or MTProto secrets into notes or ID fields.
-8. Provider credential storage and an encrypted secret integration form are planned but not implemented.
+Agent автоматически передаёт ОС, сеть, Telemt, public_host и порт. Если TOML недоступен непривилегированному пользователю, установите опциональный ограниченный config reader или задайте публичный адрес/порт вручную. Не делайте TOML общедоступным — он содержит пользовательские секреты.
 
-The agent cannot yet automatically ask for all credentials. This milestone is a durable onboarding/settings MVP, not the full intelligent wizard.
+Не добавляйте ключи в примечания, имена и ID. Интеграции вводятся в специальной защищённой форме или локальной командой.
