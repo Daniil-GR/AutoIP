@@ -22,7 +22,8 @@ def main():
     sub.add_parser("adopt-v01")
     sub.add_parser("policy-init")
     telethon = sub.add_parser("telethon-login")
-    telethon.add_argument("name")
+    telethon.add_argument("name", nargs="?", default="Telegram account")
+    telethon.add_argument("--integration-id")
     sponsor = sub.add_parser("sponsor-agent")
     sponsor.add_argument("agent_id")
     sponsor.add_argument("--approve-new-registration", action="store_true")
@@ -47,7 +48,7 @@ def main():
         import asyncio
         from .sponsorship import authorize_local
 
-        asyncio.run(authorize_local(args.name))
+        asyncio.run(authorize_local(args.name, args.integration_id))
     elif args.command == "sponsor-agent":
         import asyncio
         from .sponsorship import sponsor_agent
@@ -91,6 +92,8 @@ def main():
                     name=item.name, kind=item.kind, credentials=credentials
                 )
                 body.validate_keys()
+                if item.kind == "telethon" and not credentials.get("session"):
+                    item.status = "authorization_required"
                 db.add(item)
                 audit(
                     db, "local-admin", "integration_imported", item.id, kind=item.kind

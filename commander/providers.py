@@ -128,7 +128,30 @@ async def test_connection(kind, credentials):
                     "ok": bool(data.get("ok")),
                     "message": "Telegram Bot API: проверка getMe завершена",
                 }
+        if kind == "dynadot":
+            from .dynadot import Dynadot, DynadotError
+
+            try:
+                await Dynadot(credentials["api_key"], credentials["api_secret"]).get(
+                    "/accounts/info"
+                )
+                return {
+                    "ok": True,
+                    "message": "Dynadot v2: подписанный запрос чтения принят. Запись DNS отключена",
+                }
+            except DynadotError as error:
+                return {
+                    "ok": False,
+                    "provider_status": error.status,
+                    "message": "Dynadot отклонил проверку. Проверьте ключи и разрешённый IP Commander в Tools → API",
+                }
         if kind == "telethon":
+            if not credentials.get("session"):
+                return {
+                    "ok": False,
+                    "status": "authorization_required",
+                    "message": "Данные сохранены. Завершите авторизацию локальной командой; код и пароль 2FA в чат не отправляйте",
+                }
             from telethon import TelegramClient
             from telethon.sessions import StringSession
 

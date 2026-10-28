@@ -735,6 +735,8 @@ def save_integration(
         ciphertext=encrypt(identifier, body.kind, body.credentials),
         metadata_json={},
     )
+    if body.kind == "telethon" and not body.credentials.get("session"):
+        item.status = "authorization_required"
     db.add(item)
     audit(db, actor, "integration_created", identifier, kind=body.kind)
     db.commit()
@@ -751,7 +753,7 @@ async def test_integration(
     if not item:
         raise HTTPException(404, "Интеграция не найдена")
     report = await test_connection(item.kind, decrypt(item))
-    item.status = "verified" if report["ok"] else "failed"
+    item.status = report.get("status") or ("verified" if report["ok"] else "failed")
     audit(db, actor, "integration_tested", identifier, ok=report["ok"])
     db.commit()
     return report
@@ -845,3 +847,21 @@ def check_sni(
     audit(db, actor, "sni_check_credits_approved", task.id)
     db.commit()
     return {"task_id": task.id, "status": task.status}
+
+
+@app.get("/api/integrations/{identifier}/dns-domains")
+async def dns_domains(
+    identifier: str, page: int = 1, actor=Depends(admin), db: Session = Depends(get_db)
+):
+    from .dynadot import Dynadot, DynadotError
+
+    item = db.get(Integration, identifier)
+    if not item or item.kind != "dynadot":
+        raise HTTPException(404, "Интеграция Dynadot не найдена")
+    credentials = decrypt(item)
+    try:
+        return await Dynadot(credentials["api_key"], credentials["api_secret"]).domains(
+            page
+        )
+    except (DynadotError, ValueError):
+        raise HTTPException(502, "Не удалось получить список доменов Dynadot") from None

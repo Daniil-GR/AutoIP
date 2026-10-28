@@ -139,52 +139,111 @@ def account_lock(identifier):
             )
 
 
-async def authorize_local(name):
-    """Interactive authorization; never prints StringSession or asks in Telegram chat."""
+async def authorize_local(name="Telegram account", integration_id=None):
+    """Use stored credentials; codes and 2FA passwords are read only from local TTY."""
     import getpass
+    import sys
     from uuid import uuid4
+    from .schemas import IntegrationInput
 
-    api_id = int(getpass.getpass("Telegram api_id (скрытый ввод): "))
-    api_hash = getpass.getpass("Telegram api_hash (скрытый ввод): ")
-    phone = getpass.getpass("Телефон отдельного Telegram-аккаунта (скрытый ввод): ")
-    client = TelegramClient(StringSession(), api_id, api_hash)
-    try:
-        await client.connect()
-        code = await client.send_code_request(phone)
-        try:
-            await client.sign_in(
-                phone,
-                getpass.getpass("Код Telegram (скрытый ввод): "),
-                phone_code_hash=code.phone_code_hash,
-            )
-        except SessionPasswordNeededError:
-            await client.sign_in(
-                password=getpass.getpass("Пароль 2FA Telegram (скрытый ввод): ")
-            )
-        if not await client.is_user_authorized():
-            raise ManualRequired("Авторизация Telegram не завершена")
-        identifier = str(uuid4())
+    if not sys.stdin.isatty():
+        raise ManualRequired(
+            "Для входа нужен локальный интерактивный терминал; используйте docker compose run --rm -it"
+        )
+
+    if not integration_id:
         credentials = {
-            "api_id": str(api_id),
-            "api_hash": api_hash,
-            "session": client.session.save(),
+            "api_id": getpass.getpass("Telegram api_id (скрытый ввод): "),
+            "api_hash": getpass.getpass("Telegram api_hash (скрытый ввод): "),
+            "phone": getpass.getpass(
+                "Телефон отдельного Telegram-аккаунта (скрытый ввод): "
+            ),
         }
+        body = IntegrationInput(name=name, kind="telethon", credentials=credentials)
+        body.validate_keys()
+        integration_id = str(uuid4())
         with SessionLocal() as db:
             db.add(
                 Integration(
-                    id=identifier,
+                    id=integration_id,
                     name=name,
                     kind="telethon",
-                    ciphertext=encrypt(identifier, "telethon", credentials),
+                    ciphertext=encrypt(integration_id, "telethon", credentials),
                     metadata_json={},
-                    status="verified",
+                    status="authorization_required",
                 )
             )
-            audit(db, "local-admin", "telethon_authorized", identifier)
+            audit(db, "local-admin", "telethon_credentials_saved", integration_id)
             db.commit()
-        print("Telegram-аккаунт авторизован, зашифрованная интеграция ID:", identifier)
-    finally:
-        await client.disconnect()
+    with account_lock(integration_id):
+        with SessionLocal() as db:
+            item = db.get(Integration, integration_id)
+            if not item or item.kind != "telethon":
+                raise ManualRequired("Telegram-интеграция не найдена")
+            credentials = decrypt(item)
+            IntegrationInput(
+                name=item.name, kind="telethon", credentials=credentials
+            ).validate_keys()
+            item.status = "authorization_in_progress"
+            db.commit()
+        client = None
+        try:
+            client = TelegramClient(
+                StringSession(credentials.get("session", "")),
+                int(credentials["api_id"]),
+                credentials["api_hash"],
+            )
+            await asyncio.wait_for(client.connect(), timeout=30)
+            if not await asyncio.wait_for(client.is_user_authorized(), timeout=30):
+                phone = credentials.get("phone")
+                if not phone:
+                    raise ManualRequired(
+                        "Для повторной авторизации укажите телефон в защищённой интеграции"
+                    )
+                code = await asyncio.wait_for(
+                    client.send_code_request(phone), timeout=30
+                )
+                print(
+                    "Telegram запросил подтверждение входа. Код и пароль вводите только здесь; ввод скрыт."
+                )
+                try:
+                    await client.sign_in(
+                        phone,
+                        getpass.getpass("Код Telegram (скрытый ввод): "),
+                        phone_code_hash=code.phone_code_hash,
+                    )
+                except SessionPasswordNeededError:
+                    await client.sign_in(
+                        password=getpass.getpass("Пароль 2FA Telegram (скрытый ввод): ")
+                    )
+            if not await client.is_user_authorized():
+                raise ManualRequired("Авторизация Telegram не завершена")
+            credentials = {**credentials, "session": client.session.save()}
+            with SessionLocal() as db:
+                item = db.get(Integration, integration_id)
+                item.ciphertext = encrypt(integration_id, "telethon", credentials)
+                item.status = "verified"
+                audit(db, "local-admin", "telethon_authorized", integration_id)
+                db.commit()
+            print(
+                "Telegram-аккаунт авторизован; зашифрованная интеграция ID:",
+                integration_id,
+            )
+            return integration_id
+        except (Exception, KeyboardInterrupt):
+            with SessionLocal() as db:
+                item = db.get(Integration, integration_id)
+                item.status = "authorization_required"
+                db.commit()
+            raise ManualRequired(
+                "Вход не завершён. Данные сохранены; повторите локальную авторизацию. Код и пароль в чат не отправляйте"
+            ) from None
+        finally:
+            try:
+                if client is not None:
+                    await asyncio.wait_for(client.disconnect(), timeout=10)
+            except Exception:
+                pass
 
 
 async def sponsor_agent(agent_id, approve_new_registration=False):

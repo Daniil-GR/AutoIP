@@ -64,11 +64,33 @@ class IntegrationInput(BaseModel):
         return value
 
     def validate_keys(self):
+        if self.metadata:
+            raise ValueError(
+                "Произвольные метаданные интеграции пока не поддерживаются"
+            )
+        if self.kind == "telethon":
+            allowed = {"api_id", "api_hash", "phone", "session"}
+            if set(self.credentials) - allowed:
+                raise ValueError("Неизвестные поля Telegram-интеграции")
+            api_id = self.credentials.get("api_id", "")
+            if not api_id.isdigit() or not 0 < int(api_id) < 2**31:
+                raise ValueError("Некорректный Telegram api_id")
+            if not re.fullmatch(
+                r"[a-fA-F0-9]{32}", self.credentials.get("api_hash", "")
+            ):
+                raise ValueError("Некорректный Telegram api_hash")
+            phone = self.credentials.get("phone", "")
+            if phone and not re.fullmatch(r"\+[1-9][0-9]{6,14}", phone):
+                raise ValueError("Телефон должен иметь международный формат")
+            if not self.credentials.get("session") and not phone:
+                raise ValueError(
+                    "Нужны телефон для локальной авторизации или готовая StringSession"
+                )
+            return
         keys = {
             "cherry": {"api_key"},
             "dynadot": {"api_key", "api_secret"},
             "telegram_bot": {"token"},
-            "telethon": {"api_id", "api_hash", "session"},
             "ripe_atlas": {"api_key"},
             "mtproto": {"secret"},
         }[self.kind]
@@ -78,10 +100,6 @@ class IntegrationInput(BaseModel):
             r"[a-fA-F0-9]{32}", self.credentials["secret"]
         ):
             raise ValueError("Секрет MTProto должен содержать 32 hex-символа")
-        if self.metadata:
-            raise ValueError(
-                "Произвольные метаданные интеграции пока не поддерживаются"
-            )
 
 
 SAFE_FACTS = {

@@ -126,3 +126,29 @@ def test_body_size_and_security_headers(client):
     assert result.status_code == 200
     assert "frame-ancestors 'none'" in result.headers["content-security-policy"]
     assert "no-store" in result.headers["cache-control"]
+
+
+def test_pending_telethon_is_encrypted_and_not_marked_failed(client):
+    payload = {
+        "name": "Pending Telegram",
+        "kind": "telethon",
+        "credentials": {
+            "api_id": "12345",
+            "api_hash": "a" * 32,
+            "phone": "+15551234567",
+        },
+    }
+    response = client.post("/api/integrations", auth=client.auth_pair, json=payload)
+    assert response.status_code == 200
+    identifier = response.json()["id"]
+    report = client.post(
+        "/api/integrations/" + identifier + "/test", auth=client.auth_pair
+    )
+    assert (
+        report.status_code == 200
+        and report.json()["status"] == "authorization_required"
+    )
+    data = client.get("/api/integrations", auth=client.auth_pair)
+    assert data.json()[0]["status"] == "authorization_required"
+    assert payload["credentials"]["phone"] not in data.text
+    assert payload["credentials"]["api_hash"] not in data.text

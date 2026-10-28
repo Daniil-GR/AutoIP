@@ -52,6 +52,8 @@ const statuses = {
   AD_TAG_PENDING: "Ожидается применение тега",
   succeeded: "Завершено",
   failed: "Ошибка",
+  authorization_required: "Нужна авторизация локально",
+  authorization_in_progress: "Выполняется локальная авторизация",
   verified: "Проверено",
   not_tested: "Не проверено",
 };
@@ -722,6 +724,33 @@ async function integrations(root) {
           for (const p of d.projects) $("dialogBody").append(kv(p.name, p.id));
         }),
       );
+    if (i.kind === "dynadot")
+      c.append(
+        button("Показать домены", async () => {
+          const data = await api("/api/integrations/" + i.id + "/dns-domains");
+          modal("Домены Dynadot", "Только чтение. Записи DNS не изменяются.");
+          for (const domain of data.domains)
+            $("dialogBody").append(kv(domain.domain_name, domain.status));
+          if (!data.domains.length)
+            $("dialogBody").append(el("p", "Доменов на этой странице нет."));
+        }),
+      );
+    if (i.kind === "telethon")
+      c.append(
+        button("Как завершить вход", async () => {
+          modal(
+            "Локальная авторизация Telegram",
+            "Выполните команду на Commander. Уже сохранённые API-данные повторно вводить не нужно. Код и пароль 2FA вводятся скрыто в локальном терминале.",
+          );
+          $("dialogBody").append(
+            el(
+              "pre",
+              "cd /opt/autoip\ndocker compose run --rm -it migrate python -m commander.manage telethon-login --integration-id " +
+                i.id,
+            ),
+          );
+        }),
+      );
     grid.append(c);
   }
   root.append(grid);
@@ -760,7 +789,7 @@ function integrationForm() {
       cherry: ["api_key"],
       dynadot: ["api_key", "api_secret"],
       telegram_bot: ["token"],
-      telethon: ["api_id", "api_hash", "session"],
+      telethon: ["api_id", "api_hash", "phone", "session"],
       ripe_atlas: ["api_key"],
       mtproto: ["secret"],
     }[select.value];
