@@ -133,11 +133,22 @@ def safe_facts(facts):
 
 class CommanderPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    default_dns_zone: str = Field(default="", max_length=253)
     monitor_enabled: bool = False
     monitor_interval_seconds: int = Field(default=180, ge=30, le=86400)
     telegram_admin_ids: list[int] = Field(default_factory=list, max_length=20)
     monthly_budget_cents: int = Field(default=0, ge=0, le=10000000)
     account_budget_cents: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("default_dns_zone")
+    @classmethod
+    def dns_zone(cls, value):
+        value = value.strip().lower().rstrip(".")
+        if value and not re.fullmatch(
+            r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", value
+        ):
+            raise ValueError("Требуется DNS-зона, например example.com")
+        return value
 
     @field_validator("telegram_admin_ids")
     @classmethod

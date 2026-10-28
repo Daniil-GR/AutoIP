@@ -900,12 +900,27 @@ async function settings(root) {
     "number",
   );
   const monitoring = field("Включить плановые проверки", "", "checkbox");
+  const dnsZone = field("DNS-зона для новых агентов", s.default_dns_zone || "");
   monitoring.input.checked = s.monitor_enabled;
-  form.append(period.wrap, admins.wrap, budget.wrap, monitoring.wrap);
+  form.append(
+    period.wrap,
+    admins.wrap,
+    budget.wrap,
+    monitoring.wrap,
+    dnsZone.wrap,
+  );
+  p.body.append(
+    el(
+      "p",
+      "DNS-зона подставляется при регистрации нового агента. Поддомен задаётся отдельно в его настройках. Сохранение здесь не изменяет DNS-записи или настройки существующих агентов.",
+      "note",
+    ),
+  );
   p.body.append(
     form,
     button("Сохранить настройки", async () => {
       const payload = {
+        default_dns_zone: dnsZone.input.value,
         monitor_enabled: monitoring.input.checked,
         monitor_interval_seconds: Number(period.input.value),
         telegram_admin_ids: admins.input.value

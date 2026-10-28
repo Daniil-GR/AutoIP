@@ -301,6 +301,7 @@ def enroll(body: AgentEnroll, db: Session = Depends(get_db)):
         machine_id=body.machine_id,
         facts=body.facts,
         last_seen=utcnow(),
+        configuration={"dns_zone": get_policy(db).default_dns_zone},
     )
     ticket.used_at = utcnow()
     db.add(agent)

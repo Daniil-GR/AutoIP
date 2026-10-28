@@ -104,3 +104,56 @@ def test_agent_onboarding_and_settings():
     finally:
         app.dependency_overrides.clear()
         engine.dispose()
+
+
+def test_default_dns_zone_is_copied_once_without_selecting_proxy_record(client):
+    auth = client.auth_pair
+    policy = client.get("/api/settings", auth=auth).json()
+    assert policy["default_dns_zone"] == ""
+    for invalid in (
+        "https://example.com",
+        "*.example.com",
+        "example.com/records",
+        "-bad.example",
+    ):
+        assert (
+            client.put(
+                "/api/settings", json={"default_dns_zone": invalid}, auth=auth
+            ).status_code
+            == 422
+        )
+    assert (
+        client.put(
+            "/api/settings", json={"default_dns_zone": "  EXAMPLE.COM. "}, auth=auth
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get("/api/settings", auth=auth).json()["default_dns_zone"]
+        == "example.com"
+    )
+    ticket = client.post(
+        "/api/enrollments", json={"name": "DNS defaults"}, auth=auth
+    ).json()["token"]
+    agent = client.post(
+        "/api/agent/enroll", json={"token": ticket, "machine_id": "dns-defaults"}
+    ).json()["agent_id"]
+    path = f"/api/agents/{agent}/configuration"
+    config = client.get(path, auth=auth).json()
+    assert config["dns_zone"] == "example.com"
+    assert (
+        config["dns_record"]
+        == config["floating_ip"]
+        == config["dns_integration_id"]
+        == ""
+    )
+    assert (
+        client.put(
+            "/api/settings", json={"default_dns_zone": "another.example"}, auth=auth
+        ).status_code
+        == 200
+    )
+    assert client.get(path, auth=auth).json()["dns_zone"] == "example.com"
+    config["dns_zone"] = "individual.example"
+    assert client.put(path, json=config, auth=auth).status_code == 200
+    assert client.get(path, auth=auth).json()["dns_zone"] == "individual.example"
