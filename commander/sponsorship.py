@@ -264,6 +264,10 @@ async def sponsor_agent(agent_id, approve_new_registration=False):
             raise ManualRequired("Не настроены Floating IP и спонсорский канал")
         endpoint = f"{ip}:{agent.proxy_port}"
         account_id, credentials = account.id, decrypt(account)
+        if not credentials.get("session"):
+            raise ManualRequired(
+                "Telegram-аккаунт ещё не авторизован. Завершите локальный вход перед работой с MTProxybot"
+            )
         secret = decrypt(user_secret)["secret"]
     with account_lock(account_id):
         with SessionLocal() as db:

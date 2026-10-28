@@ -187,3 +187,59 @@ def test_telethon_rejects_noninteractive_secret_input(monkeypatch):
     monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: False))
     with pytest.raises(ManualRequired, match="интерактивный терминал"):
         asyncio.run(authorize_local(integration_id="no-network-call"))
+
+
+def test_sponsor_pending_account_stops_before_dialog_or_state_write(
+    db, monkeypatch, tmp_path
+):
+    from sqlalchemy.orm import sessionmaker
+    from commander import sponsorship
+    from commander.config import settings
+    from commander.database import Agent, Integration, Sponsorship
+    from commander.vault import encrypt, initialize
+
+    key = tmp_path / "key"
+    initialize(key)
+    monkeypatch.setattr(settings, "vault_key_file", str(key))
+    for identifier, kind, credentials in [
+        (
+            "account",
+            "telethon",
+            {"api_id": "12345", "api_hash": "a" * 32, "phone": "+15551234567"},
+        ),
+        ("proxy-secret", "mtproto", {"secret": "b" * 32}),
+    ]:
+        db.add(
+            Integration(
+                id=identifier,
+                kind=kind,
+                name=identifier,
+                ciphertext=encrypt(identifier, kind, credentials),
+                metadata_json={},
+            )
+        )
+    db.add(
+        Agent(
+            id="one",
+            name="Test",
+            token_hash="unused-token-hash",
+            configuration={
+                "telethon_integration_id": "account",
+                "mtproto_integration_id": "proxy-secret",
+                "floating_ip": "1.1.1.1",
+                "sponsor_channel": "https://t.me/example",
+            },
+        )
+    )
+    db.commit()
+    monkeypatch.setattr(
+        sponsorship, "SessionLocal", sessionmaker(db.bind, expire_on_commit=False)
+    )
+
+    def forbidden_client(*args, **kwargs):
+        raise AssertionError("Pending account must not contact Telegram")
+
+    monkeypatch.setattr(sponsorship, "TelegramClient", forbidden_client)
+    with pytest.raises(ManualRequired, match="ещё не авторизован"):
+        asyncio.run(sponsorship.sponsor_agent("one", approve_new_registration=True))
+    assert db.query(Sponsorship).count() == 0
