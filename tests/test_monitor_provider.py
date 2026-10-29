@@ -75,3 +75,42 @@ def test_provider_failure_is_unknown(monkeypatch):
     monkeypatch.setattr("commander.monitor.httpx.AsyncClient", Client)
     result = asyncio.run(CheckHost().check("example.com", 443))
     assert result["status"] == "unknown" and "sensitive-data" not in str(result)
+
+
+def test_checkhost_web_https_is_separate_from_mtproto(monkeypatch):
+    calls = []
+
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            if url.endswith("/nodes/hosts"):
+                data = {
+                    "nodes": {
+                        "ru1": {"asn": "AS1", "location": ["ru", "Russia", "Moscow"]}
+                    }
+                }
+            elif url.endswith("/check-http"):
+                data = {"request_id": "web-test"}
+            else:
+                data = {"ru1": [[1, 0.05, "OK", "200", "8.8.8.8"]]}
+            return httpx.Response(200, json=data, request=httpx.Request("GET", url))
+
+    async def no_sleep(_):
+        pass
+
+    monkeypatch.setattr("commander.monitor.httpx.AsyncClient", Client)
+    monkeypatch.setattr("commander.monitor.asyncio.sleep", no_sleep)
+    result = asyncio.run(CheckHost().check("web.example.com", 443, protocol="https"))
+    assert result["observations"][0]["state"] == "reachable"
+    assert result["observations"][0]["protocol"] == "https"
+    assert ("host", "https://web.example.com:443/") in calls[1][1]["params"]
+    assert all("/check-tcp" not in url for url, _ in calls)

@@ -180,12 +180,33 @@ def agent_view(db, user_id, agent_id, mode):
     agent = require_agent(db, agent_id)
     check = db.scalar(
         select(Check)
-        .where(Check.agent_id == agent.id)
+        .where(Check.agent_id == agent.id, ~Check.result.startswith("sni_"))
         .order_by(Check.created_at.desc())
         .limit(1)
     )
     sponsor = db.get(Sponsorship, agent.id)
     config = agent.configuration or {}
+    from .mtproto_checker import status_label
+
+    evidence = (check.details or {}) if check else {}
+    monitor_state = (
+        {
+            "reachable": "доступен",
+            "tcp_only": "TCP доступен; MTProto не подтверждён",
+            "suspected": "вероятная недоступность из РФ",
+            "proxy_degraded": "прокси недоступен или деградировал",
+            "local_fault": "проблема агента или Telemt",
+            "unknown": "недостаточно данных",
+        }.get(check.result, check.result)
+        if check
+        else "нет проверок"
+    )
+    web = evidence.get("web_endpoint", {})
+    web_state = (
+        "HTTPS-адрес доступен (данные веб-прокси не проверены)"
+        if web.get("status") == "reachable"
+        else "нет подтверждённого результата"
+    )
     sni = db.scalar(
         select(Check)
         .where(Check.agent_id == agent.id, Check.result.startswith("sni_"))
@@ -208,14 +229,20 @@ def agent_view(db, user_id, agent_id, mode):
         f"Исходный IPv4 прокси: {config.get('proxy_ip') or 'не указан'}\n"
         f"Связь: {'онлайн' if online(agent) else 'нет heartbeat'}\n"
         f"Telemt: {agent.facts.get('telemt_service', 'неизвестно')}\n"
-        f"Мониторинг: {check.result if check else 'нет проверок'}\n"
+        f"Мониторинг: {monitor_state}\n"
+        f"MTProto: {status_label(evidence.get('mtproto_status', 'UNKNOWN'))}\n"
+        f"Веб-прокси: {web_state}\n"
         f"SNI РФ / зарубежье: {sni_state}\n"
         f"Спонсорство: {sponsor.status if sponsor else 'не настроено'}\n"
         f"Автоматизация: {'приостановлена' if agent.paused else 'ручной безопасный режим'}"
     )
     rows = [
         [button(db, user_id, "🔍 Проверить из РФ", "check", agent.id)],
-        [button(db, user_id, "SNI: РФ и три страны", "prepare_sni", agent.id)],
+        [
+            button(
+                db, user_id, "Дополнительно: SNI / RIPE Atlas", "prepare_sni", agent.id
+            )
+        ],
         [
             button(
                 db,
@@ -280,7 +307,8 @@ def dispatch_action(db, user_id, item):
     elif action == "status":
         agents = db.scalars(select(Agent).where(Agent.revoked.is_(False))).all()
         count = sum(online(a) for a in agents)
-        text = f"📊 Всего агентов: {len(agents)}\nОнлайн: {count}\nОфлайн: {len(agents) - count}\nПлатные операции отключены."
+        interval = get_policy(db).monitor_interval_seconds
+        text = f"📊 Всего агентов: {len(agents)}\nОнлайн: {count}\nОфлайн: {len(agents) - count}\nИнтервал проверок: {interval} сек.\nОсновные: Check-Host и MTProto Checker. RIPE Atlas — дополнительно.\nПлатные операции отключены."
     elif action in ("agents", "checks", "recovery", "automation"):
         text = "Выберите агента"
         markup = agent_buttons(db, user_id, action)

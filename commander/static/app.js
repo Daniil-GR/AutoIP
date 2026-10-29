@@ -32,7 +32,9 @@ const statuses = {
   available: "Доступен",
   unavailable: "Недоступен",
   partial: "Частично доступен",
-  reachable: "Доступен TCP",
+  reachable: "Доступен",
+  proxy_degraded: "Прокси недоступен или деградировал",
+  tcp_only: "TCP доступен; MTProto не подтверждён",
   suspected: "Вероятная недоступность",
   unknown: "Неопределённо",
   local_fault: "Проблема агента или Telemt",
@@ -265,11 +267,11 @@ async function dashboard(root) {
   }
   root.append(stats);
   const grid = el("div", "", "grid");
-  const health = panel("Доступность TCP из России");
+  const health = panel("Доступность прокси из России");
   health.body.append(
     el(
       "p",
-      "Последние сохранённые проверки. Доступность TCP не подтверждает работу MTProto.",
+      "Последние сохранённые проверки MTProto. TCP и передача данных до DC показаны отдельно в мониторинге; веб-адрес проверяется независимо.",
       "note",
     ),
   );
@@ -513,6 +515,11 @@ async function editAgent(a) {
     ["dns_record", "Полное имя записи, proxy.example.com"],
     ["telethon_integration_id", "Telegram-аккаунт Telethon"],
     ["mtproto_integration_id", "Секрет MTProto (из хранилища)"],
+    ["checker_integration_id", "MTProto Checker (только MTProto)"],
+    ["mtproto_secret_format", "Формат секрета MTProto: dd или ee"],
+    ["web_proxy_host", "Веб-прокси: HTTPS-домен"],
+    ["web_proxy_port", "Веб-прокси: HTTPS-порт"],
+    ["ripe_atlas_integration_id", "RIPE Atlas для дополнительных проверок"],
     ["sponsor_channel", "Публичный спонсорский канал"],
     ["monthly_budget_cents", "Лимит EUR в месяц, в центах"],
     ["max_candidates_per_incident", "Кандидатов на инцидент"],
@@ -546,7 +553,11 @@ async function editAgent(a) {
                         ? "telethon"
                         : key.startsWith("mtproto")
                           ? "mtproto"
-                          : "dynadot"),
+                          : key.startsWith("checker")
+                            ? "mtproto_checker"
+                            : key.startsWith("ripe_atlas")
+                              ? "ripe_atlas"
+                              : "dynadot"),
                 )
                 .map((i) => [i.id, i.name + " · " + title(i.status)]),
             ];
@@ -562,7 +573,9 @@ async function editAgent(a) {
       f = field(
         label,
         config[key] ?? "",
-        key.startsWith("max_") || key === "monthly_budget_cents"
+        key.startsWith("max_") ||
+          key === "monthly_budget_cents" ||
+          key.endsWith("_port")
           ? "number"
           : "text",
       );
@@ -583,7 +596,9 @@ async function editAgent(a) {
     const payload = { ...config };
     for (const [key] of schema)
       payload[key] =
-        key.startsWith("max_") || key === "monthly_budget_cents"
+        key.startsWith("max_") ||
+        key === "monthly_budget_cents" ||
+        key.endsWith("_port")
           ? Number(inputs[key].value)
           : inputs[key].value.trim();
     await write("/api/agents/" + a.id + "/configuration", payload, "PUT");
@@ -616,7 +631,13 @@ async function recovery(a) {
   }, "Выполнить предпроверку");
 }
 async function monitoring(root) {
-  const coverage = panel("RIPE Atlas: покрытие проверок");
+  root.append(
+    card(
+      "Основные источники · раз в 5 минут по умолчанию",
+      "Check-Host проверяет TCP MTProto и HTTPS веб-адреса; MTProto Checker проверяет только MTProto-хендшейк и данные до DC. RIPE Atlas — дополнительная TLS/SNI-проверка при недоступном или неопределённом ответе основного источника.",
+    ),
+  );
+  const coverage = panel("Дополнительно · RIPE Atlas: покрытие проверок");
   const details = el("div");
   coverage.body.append(
     el(
@@ -646,11 +667,37 @@ async function monitoring(root) {
         el("strong", title(c.result)),
         el("div", new Date(c.created_at).toLocaleString("ru-RU"), "muted"),
       );
+      if (c.details.mtproto_status)
+        item.append(
+          kv("MTProto Checker", checkerLabel(c.details.mtproto_status)),
+        );
+      if (c.details.web_endpoint)
+        item.append(
+          kv(
+            "Веб-адрес HTTPS (данные прокси не проверены)",
+            `${c.details.web_endpoint.target}:${c.details.web_endpoint.port} · ${title(c.details.web_endpoint.status)}`,
+          ),
+        );
+      for (const report of c.details.reports || [])
+        if (report.error)
+          item.append(
+            el("p", `${report.source}: ${providerError(report.error)}`, "warn"),
+          );
+      if (
+        c.details.atlas_fallback &&
+        c.details.atlas_fallback.status !== "standby"
+      )
+        item.append(
+          kv(
+            "RIPE Atlas · резерв",
+            fallbackLabel(c.details.atlas_fallback.status),
+          ),
+        );
       for (const o of c.details.observations || [])
         item.append(
           el(
             "div",
-            `${o.source} · ${o.country} · ${o.asn || "ASN неизвестен"} · ${o.target || ""} → ${title(o.state)}`,
+            `${o.source} · ${o.scope === "web-endpoint" ? "Веб HTTPS" : o.protocol === "mtproto" ? "MTProto" : "MTProto TCP"} · ${o.country === "EXTERNAL" ? "Внешняя точка" : o.country} · ${o.asn || "ASN неизвестен"} · ${o.target || ""} → ${title(o.state)}${o.protocol === "mtproto" ? ` · хендшейк: ${boolLabel(o.handshake)} · данные: ${boolLabel(o.data)} · RTT: ${o.latency_ms ?? "—"} мс` : ""}`,
             "mono",
           ),
         );
@@ -808,7 +855,8 @@ function integrationForm() {
     ["dynadot", "Dynadot"],
     ["telegram_bot", "Telegram-бот"],
     ["telethon", "Telegram-аккаунт Telethon"],
-    ["ripe_atlas", "RIPE Atlas"],
+    ["ripe_atlas", "RIPE Atlas (дополнительный источник)"],
+    ["mtproto_checker", "MTProto Checker"],
     ["mtproto", "MTProto secret"],
   ]) {
     const o = el("option", t);
@@ -829,6 +877,7 @@ function integrationForm() {
       telegram_bot: ["token"],
       telethon: ["api_id", "api_hash", "phone", "session"],
       ripe_atlas: ["api_key"],
+      mtproto_checker: ["api_key"],
       mtproto: ["secret"],
     }[select.value];
     for (const key of keys) {
@@ -939,6 +988,12 @@ async function settings(root) {
   );
   const monitoring = field("Включить плановые проверки", "", "checkbox");
   const dnsZone = field("DNS-зона для новых агентов", s.default_dns_zone || "");
+  const atlasFallback = field(
+    "Разрешить резервный RIPE Atlas и расход его кредитов (не чаще раза в час на агента)",
+    "",
+    "checkbox",
+  );
+  atlasFallback.input.checked = s.atlas_fallback_enabled;
   monitoring.input.checked = s.monitor_enabled;
   form.append(
     period.wrap,
@@ -946,6 +1001,7 @@ async function settings(root) {
     budget.wrap,
     monitoring.wrap,
     dnsZone.wrap,
+    atlasFallback.wrap,
   );
   p.body.append(
     el(
@@ -959,6 +1015,7 @@ async function settings(root) {
     button("Сохранить настройки", async () => {
       const payload = {
         default_dns_zone: dnsZone.input.value,
+        atlas_fallback_enabled: atlasFallback.input.checked,
         monitor_enabled: monitoring.input.checked,
         monitor_interval_seconds: Number(period.input.value),
         telegram_admin_ids: admins.input.value
@@ -1124,4 +1181,52 @@ function renderAtlasCoverage(root, plan) {
     table.append(row);
   }
   root.append(table, el("p", plan.note, "note"));
+}
+
+function checkerLabel(status) {
+  return (
+    {
+      OK: "Работает: данные проходят из РФ и снаружи",
+      DATA_CUT: "Из РФ хендшейк проходит, данные режутся",
+      RKN_BLOCK: "Из РФ не проходит TCP/хендшейк, снаружи работает",
+      MT_DEAD: "Снаружи TCP открыт, данные до DC не проходят",
+      DOWN: "Недоступен из обеих точек",
+      UNKNOWN: "Недостаточно данных",
+    }[status] || status
+  );
+}
+function fallbackLabel(value) {
+  return (
+    {
+      queued: "Дополнительная проверка поставлена в очередь",
+      running: "Дополнительная проверка уже выполняется",
+      submission_uncertain:
+        "Нужна ручная сверка RIPE Atlas; повторное измерение не создаётся",
+      not_configured: "Не настроена интеграция RIPE Atlas у агента",
+      cooldown: "Не запускаем повторно чаще раза в час",
+      disabled: "Автоматический резерв отключён",
+      paused: "Автоматизация приостановлена",
+      configuration_error: "Проверьте настройки RIPE Atlas и SNI",
+    }[value] || value
+  );
+}
+function providerError(value) {
+  return (
+    {
+      not_configured: "Не выбраны ключ сервиса и секрет MTProto",
+      configuration_error: "Проверьте настройки источника",
+      rate_limited: "Сервис ограничил частоту запросов",
+      local_rate_limit: "Общий лимит ключа, запрос отложен",
+      credentials_rejected: "Сервис отклонил ключ",
+      service_unavailable: "Сервис не ответил",
+      malformed_response: "Неизвестный формат ответа",
+      target_mismatch: "Ответ относится к другой цели",
+      stale_response: "Ответ устарел",
+      inconsistent_response: "Статус противоречит данным ответа",
+    }[value] || "Источник недоступен или вернул неполные данные"
+  );
+}
+
+function boolLabel(value) {
+  return value === true ? "да" : value === false ? "нет" : "нет данных";
 }

@@ -59,6 +59,20 @@ def test_populated_v01_upgrade_and_concurrent_check_dedup(monkeypatch):
     assert results[0] == results[1]
     with factory() as db:
         assert len(db.scalars(select(ControlTask)).all()) == 1
+    from commander.database import utcnow
+    from commander.monitoring import rate_slot
+
+    instant = utcnow()
+
+    def reserve(_):
+        with factory() as db:
+            allowed, _ = rate_slot(db, "postgres-shared-key", instant)
+            db.commit()
+            return allowed
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        slots = list(pool.map(reserve, range(40)))
+    assert sum(slots) == 25  # One shared key cannot exceed its budget across workers.
     # Migrating a second time is harmless and does not remove legacy data.
     command.upgrade(cfg, "head")
     with factory() as db:

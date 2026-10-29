@@ -111,6 +111,10 @@ def dns_plan(snapshot, zone, host, old_ip, new_ip):
 
 async def test_connection(kind, credentials):
     try:
+        if kind == "mtproto_checker":
+            from .mtproto_checker import test_key
+
+            return await test_key(credentials["api_key"])
         if kind == "cherry":
             await Cherry(credentials["api_key"]).get("/teams")
             return {

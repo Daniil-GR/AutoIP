@@ -210,6 +210,7 @@ def record_evidence(db, agent_id, evidence, result, incident_id=None):
     agent = require_agent(db, agent_id, lock=True)
     db.add(Check(agent_id=agent_id, result=result, details=evidence))
     record_monitor_health(db, agent, evidence)
+    record_protocol_health(db, agent, evidence, result)
     active = db.scalar(
         select(Incident)
         .where(Incident.agent_id == agent_id, Incident.status.in_(ACTIVE_INCIDENTS))
@@ -256,6 +257,19 @@ def record_evidence(db, agent_id, evidence, result, incident_id=None):
             )
         return
     if not active:
+        protocol_status = next(
+            (
+                r.get("provider_status")
+                for r in evidence.get("reports", [])
+                if r.get("source") == "mtproto-checker"
+            ),
+            None,
+        )
+        summary = (
+            f"MTProto Checker: {protocol_status}; отдельная RU-точка и внешняя нода. Проверьте результаты других источников."
+            if protocol_status
+            else "Отказы TCP из нескольких RU ASN при доступности из других стран."
+        )
         active = Incident(
             agent_id=agent_id,
             observed_ip=current_ip,
@@ -268,7 +282,7 @@ def record_evidence(db, agent_id, evidence, result, incident_id=None):
             Notification(
                 topic="incident",
                 target=active.id,
-                text=f"Вероятная недоступность: {agent.name}\n{agent.public_host}:{agent.proxy_port}\nIP: {current_ip or 'не настроен'}\nНачало: {display_time(utcnow())}\nОтказы TCP из нескольких RU ASN при доступности из других стран. Требуется проверка; блокировка не доказана.",
+                text=f"Вероятная недоступность: {agent.name}\n{agent.public_host}:{agent.proxy_port}\nIP: {current_ip or 'не настроен'}\nНачало: {display_time(utcnow())}\n{summary} Требуется проверка; блокировка не доказана.",
             )
         )
     else:
@@ -343,7 +357,7 @@ def schedule(db):
     for agent in db.scalars(select(Agent).where(Agent.paused.is_(False))).all():
         last = db.scalar(
             select(Check)
-            .where(Check.agent_id == agent.id)
+            .where(Check.agent_id == agent.id, ~Check.result.startswith("sni_"))
             .order_by(Check.created_at.desc())
             .limit(1)
         )
@@ -430,6 +444,27 @@ def record_monitor_health(db, agent, evidence):
         stored.value = {"failed": failed}
     else:
         db.add(SystemSetting(key=key, value={"failed": failed}))
+
+
+def record_protocol_health(db, agent, evidence, result):
+    if result not in ("proxy_degraded", "reachable"):
+        return
+    key = "proxyhealth:" + agent.id
+    stored = db.get(SystemSetting, key)
+    previous = stored.value.get("degraded", False) if stored else False
+    degraded = result == "proxy_degraded"
+    if degraded != previous:
+        state = evidence.get("mtproto_status", "UNKNOWN")
+        text = (
+            f"{agent.name}: MTProto недоступен или деградировал ({state}). Это не подтверждение блокировки в РФ; проверьте Telemt и связь с Telegram DC."
+            if degraded
+            else f"{agent.name}: доступность восстановилась после деградации MTProto."
+        )
+        db.add(Notification(topic="proxy_health", target=agent.id, text=text))
+    if stored:
+        stored.value = {"degraded": degraded}
+    else:
+        db.add(SystemSetting(key=key, value={"degraded": degraded}))
 
 
 def request_sni_check(db, agent_id, integration_id, actor):

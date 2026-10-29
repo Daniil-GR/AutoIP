@@ -42,6 +42,7 @@ def main():
             "telethon",
             "ripe_atlas",
             "mtproto",
+            "mtproto_checker",
         ],
     )
     args = parser.parse_args()

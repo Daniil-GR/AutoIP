@@ -56,7 +56,7 @@ def main():
             "AUTOIP_TELEGRAM_ADMIN_IDS": json.dumps([args.telegram_admin]),
             "AUTOIP_VAULT_KEY_FILE": str(key_path),
             "AUTOIP_MONITOR_ENABLED": "false",
-            "AUTOIP_MONITOR_INTERVAL_SECONDS": "180",
+            "AUTOIP_MONITOR_INTERVAL_SECONDS": "300",
             "AUTOIP_BIND_PORT": "18080",
         }
         exclusive(env_path, "".join(f"{k}={v}\n" for k, v in values.items()))

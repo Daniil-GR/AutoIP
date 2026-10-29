@@ -21,6 +21,11 @@ class AgentConfiguration(BaseModel):
     dns_record: str = Field(default="", max_length=253)
     telethon_integration_id: str = ""
     mtproto_integration_id: str = ""
+    checker_integration_id: str = ""
+    ripe_atlas_integration_id: str = ""
+    mtproto_secret_format: Literal["dd", "ee"] = "dd"
+    web_proxy_host: str = Field(default="", max_length=253)
+    web_proxy_port: int = Field(default=443, ge=1, le=65535)
     sponsor_channel: str = Field(default="", max_length=250)
     notes: str = Field(default="", max_length=800)
     max_candidates_per_incident: int = Field(default=3, ge=1, le=10)
@@ -28,6 +33,16 @@ class AgentConfiguration(BaseModel):
     max_billed_ips: int = Field(default=2, ge=1, le=10)
     monthly_budget_cents: int = Field(default=0, ge=0, le=10000000)
     automation_mode: Literal["manual", "paused"] = "manual"
+
+    @field_validator("web_proxy_host")
+    @classmethod
+    def web_host(cls, value):
+        from .monitor import valid_target
+
+        value = value.strip().lower()
+        if value and not valid_target(value, 443):
+            raise ValueError("Требуется публичный адрес веб-прокси")
+        return value
 
     @field_validator("management_ip", "proxy_ip", "floating_ip")
     @classmethod
@@ -52,7 +67,13 @@ class IntegrationInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=2, max_length=100)
     kind: Literal[
-        "cherry", "dynadot", "telegram_bot", "telethon", "ripe_atlas", "mtproto"
+        "cherry",
+        "dynadot",
+        "telegram_bot",
+        "telethon",
+        "ripe_atlas",
+        "mtproto",
+        "mtproto_checker",
     ]
     credentials: dict[str, str] = Field(repr=False)
     metadata: dict = Field(default_factory=dict)
@@ -94,6 +115,7 @@ class IntegrationInput(BaseModel):
             "telegram_bot": {"token"},
             "ripe_atlas": {"api_key"},
             "mtproto": {"secret"},
+            "mtproto_checker": {"api_key"},
         }[self.kind]
         if set(self.credentials) != keys or not all(self.credentials.values()):
             raise ValueError("Необходимы поля: " + ", ".join(sorted(keys)))
@@ -136,7 +158,8 @@ class CommanderPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
     default_dns_zone: str = Field(default="", max_length=253)
     monitor_enabled: bool = False
-    monitor_interval_seconds: int = Field(default=180, ge=30, le=86400)
+    atlas_fallback_enabled: bool = False
+    monitor_interval_seconds: int = Field(default=300, ge=30, le=86400)
     telegram_admin_ids: list[int] = Field(default_factory=list, max_length=20)
     monthly_budget_cents: int = Field(default=0, ge=0, le=10000000)
     account_budget_cents: dict[str, int] = Field(default_factory=dict)

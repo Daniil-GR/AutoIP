@@ -525,6 +525,8 @@ def set_configuration(
         (body.dns_integration_id, "dynadot"),
         (body.telethon_integration_id, "telethon"),
         (body.mtproto_integration_id, "mtproto"),
+        (body.checker_integration_id, "mtproto_checker"),
+        (body.ripe_atlas_integration_id, "ripe_atlas"),
     ]:
         integration = db.get(Integration, identifier) if identifier else None
         if identifier and (not integration or integration.kind != kind):

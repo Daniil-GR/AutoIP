@@ -7,7 +7,8 @@ from datetime import timedelta
 from sqlalchemy import or_, select
 
 from .database import Agent, ControlTask, SessionLocal, utcnow
-from .monitor import collect, verdict
+from .monitor import verdict
+from .monitoring import collect_agent
 from .services import online, proxy_address, record_evidence, schedule
 
 log = logging.getLogger(__name__)
@@ -60,16 +61,16 @@ async def tick():
 
             await execute_task(task_id)
             return True
-        evidence = await collect(host or "", port, observed_ip)
+        evidence = await collect_agent(agent_id, host or "", port, observed_ip)
         with SessionLocal() as db:
             task = db.scalar(
                 select(ControlTask).where(ControlTask.id == task_id).with_for_update()
             )
             agent = db.get(Agent, agent_id)
-            if observed_ip != proxy_address(agent):
+            if observed_ip != proxy_address(agent) or port != agent.proxy_port:
                 task.status, task.result = (
                     "failed",
-                    {"error": "IP изменился во время проверки"},
+                    {"error": "IP или порт изменился во время проверки"},
                 )
             else:
                 result = verdict(

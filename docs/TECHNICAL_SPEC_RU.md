@@ -50,9 +50,9 @@ Reuse integrations across agents without sharing individual agent state. Provide
 
 ## 4. Check-Host and second source
 
-Check each agent every 3 minutes. Check TCP to public_host:port and resolved IPv4:port from several RU and non-RU nodes. Check-Host is asynchronous; poll /check-result until complete; null/unknown/timeout is NOT proof of IP blocking.
+Check each agent every 5 minutes. Check TCP to public_host:port and resolved IPv4:port from several RU and non-RU nodes. Check-Host is asynchronous; poll /check-result until complete; null/unknown/timeout is NOT proof of IP blocking.
 
-Second monitoring provider will be supplied later. Implement pluggable interface to permit real MTProto tests, distinct RU ASN observations, DNS vs IP diagnostics and network-level node data.
+Primary sources are Check-Host and MTProto Checker. MTProto Checker applies only to MTProto (port/secret), never to the web proxy. Store TCP reachability, MTProto handshake/data and web HTTPS endpoint availability separately. RIPE Atlas is an optional supplementary TLS/SNI check when a primary source cannot return a usable result; require configured credentials and bounded credit approval.
 
 Do not classify service crash, routing error, DNS drift, unassigned IP or monitoring API outage as censorship. Prefer true protocol checks from independent RU points. Store evidence.
 

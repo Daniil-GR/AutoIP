@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     telegram_admin_ids: list[int] = Field(default_factory=list)
     totp_secret_file: str = ""
     monitor_enabled: bool = False
-    monitor_interval_seconds: int = Field(default=180, ge=30)
+    monitor_interval_seconds: int = Field(default=300, ge=30)
     worker_enabled: bool = False
     session_hours: int = Field(default=8, ge=1, le=24)
 

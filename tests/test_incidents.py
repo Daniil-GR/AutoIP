@@ -235,3 +235,58 @@ def test_health_alerts_only_on_transitions(db):
     record_agent_health(db)
     db.commit()
     assert len(db.scalars(select(Notification)).all()) == 3
+
+
+def test_protocol_degradation_alerts_once_and_is_not_a_block(db):
+    a = agent(db)
+    data = {"mtproto_status": "MT_DEAD", "reports": [], "observations": []}
+    record_evidence(db, a.id, data, "proxy_degraded")
+    db.commit()
+    record_evidence(db, a.id, data, "proxy_degraded")
+    db.commit()
+    notices = db.scalars(
+        select(Notification).where(Notification.topic == "proxy_health")
+    ).all()
+    assert len(notices) == 1 and "не подтверждение блокировки" in notices[0].text
+    assert db.scalar(select(Incident)) is None
+    record_evidence(db, a.id, {"reports": [], "observations": []}, "reachable")
+    db.commit()
+    assert (
+        len(
+            db.scalars(
+                select(Notification).where(Notification.topic == "proxy_health")
+            ).all()
+        )
+        == 2
+    )
+
+
+def test_recent_secondary_sni_does_not_delay_primary_monitoring(db):
+    from commander.database import Check, SystemSetting
+    from commander.schemas import CommanderPolicy
+
+    a = agent(db)
+    db.add(
+        SystemSetting(
+            key="commander",
+            value=CommanderPolicy(
+                monitor_enabled=True, monitor_interval_seconds=300
+            ).model_dump(),
+        )
+    )
+    db.add(
+        Check(
+            agent_id=a.id,
+            result="reachable",
+            details={},
+            created_at=utcnow() - timedelta(seconds=301),
+        )
+    )
+    db.add(
+        Check(agent_id=a.id, result="sni_available", details={}, created_at=utcnow())
+    )
+    db.commit()
+    schedule(db)
+    db.commit()
+    task = db.scalar(select(ControlTask))
+    assert task is not None and task.kind == "check" and task.agent_id == a.id

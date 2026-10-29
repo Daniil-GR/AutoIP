@@ -32,7 +32,9 @@ class MonitorProvider(Protocol):
 class CheckHost:
     name = "check-host"
 
-    async def check(self, host, port):
+    async def check(self, host, port, protocol="tcp"):
+        if protocol not in ("tcp", "https"):
+            raise ValueError("Unsupported check protocol")
         if not valid_target(host, port):
             return {
                 "status": "unknown",
@@ -68,8 +70,17 @@ class CheckHost:
                         "observations": [],
                     }
                 response = await client.get(
-                    "https://check-host.net/check-tcp",
-                    params=[("host", f"{host}:{port}")]
+                    "https://check-host.net/check-http"
+                    if protocol == "https"
+                    else "https://check-host.net/check-tcp",
+                    params=[
+                        (
+                            "host",
+                            f"https://{host}:{port}/"
+                            if protocol == "https"
+                            else f"{host}:{port}",
+                        )
+                    ]
                     + [("node", n) for n in selected],
                     headers={"Accept": "application/json"},
                 )
@@ -96,7 +107,19 @@ class CheckHost:
                     item = raw[0] if isinstance(raw, list) and raw else None
                     # Timeouts, DNS failures and unknown response schemas are inconclusive.
                     state = "unknown"
-                    if isinstance(item, dict):
+                    if (
+                        protocol == "https"
+                        and isinstance(item, list)
+                        and len(item) >= 4
+                        and item[0] == 1
+                    ):
+                        code = str(item[3])
+                        state = (
+                            "reachable"
+                            if code.isdigit() and 200 <= int(code) < 400
+                            else "failed"
+                        )
+                    elif protocol == "tcp" and isinstance(item, dict):
                         if isinstance(item.get("time"), (int, float)) and item.get(
                             "address"
                         ):
@@ -109,7 +132,7 @@ class CheckHost:
                             "node": node,
                             **info,
                             "state": state,
-                            "protocol": "tcp",
+                            "protocol": protocol,
                             "raw": raw,
                         }
                     )
@@ -166,12 +189,37 @@ async def collect(host, port, ip=""):
 
 
 def verdict(evidence, telemt_ok, fresh):
-    observations = evidence.get("observations", [])
+    protocol = next(
+        (
+            r.get("provider_status")
+            for r in evidence.get("reports", [])
+            if r.get("source") == "mtproto-checker"
+            and r.get("status") == "observed"
+            and (not evidence.get("ip") or r.get("target") == evidence["ip"])
+        ),
+        None,
+    )
+    if protocol == "OK":
+        return "reachable"
+    if protocol in ("DATA_CUT", "RKN_BLOCK"):
+        return "suspected" if telemt_ok and fresh else "local_fault"
+    if protocol in ("MT_DEAD", "DOWN"):
+        return "proxy_degraded" if telemt_ok and fresh else "local_fault"
+    observations = [
+        o for o in evidence.get("observations", []) if o.get("scope") != "web-endpoint"
+    ]
     if evidence.get("ip"):
         observations = [o for o in observations if o.get("target") == evidence["ip"]]
     ru = [o for o in observations if o.get("country") == "RU"]
     if any(o.get("state") == "reachable" for o in ru):
-        return "reachable"
+        return (
+            "tcp_only"
+            if any(
+                r.get("source") == "mtproto-checker"
+                for r in evidence.get("reports", [])
+            )
+            else "reachable"
+        )
     if not telemt_ok or not fresh:
         return "local_fault"
     foreign_ok = any(
@@ -184,10 +232,18 @@ def verdict(evidence, telemt_ok, fresh):
 
 
 def independent_failure(evidence):
+    if any(
+        r.get("provider_status") in ("OK", "MT_DEAD", "DOWN")
+        for r in evidence.get("reports", [])
+        if r.get("source") == "mtproto-checker"
+    ):
+        return False
     failures = [
         o
         for o in evidence.get("observations", [])
-        if o.get("country") == "RU" and o.get("state") == "failed"
+        if o.get("country") == "RU"
+        and o.get("state") == "failed"
+        and o.get("scope") != "web-endpoint"
     ]
     return (
         len({o.get("source") for o in failures}) >= 2
