@@ -12,7 +12,11 @@ from contextlib import contextmanager
 
 from sqlalchemy import text
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.errors import (
+    FloodWaitError,
+    PasswordHashInvalidError,
+    SessionPasswordNeededError,
+)
 from telethon.sessions import StringSession
 
 from .database import (
@@ -68,7 +72,9 @@ async def read_login_code(client, phone, sent):
             )
         else:
             print("Повторная отправка сейчас недоступна. Пустой ввод отменяет вход.")
-        value = getpass.getpass("Код Telegram (скрытый ввод): ").strip()
+        value = (
+            await asyncio.to_thread(getpass.getpass, "Код Telegram (скрытый ввод): ")
+        ).strip()
         if value:
             return value, sent.phone_code_hash
         if not can_resend:
@@ -200,7 +206,9 @@ async def authorize_qr(client):
 
     print("На телефоне: Telegram → Настройки → Устройства → Подключить устройство.")
     print("Сканируйте QR только своим аккаунтом. QR и ссылки входа не пересылайте.")
-    input("Подготовьте сканер на телефоне и нажмите Enter для показа QR: ")
+    await asyncio.to_thread(
+        input, "Подготовьте сканер на телефоне и нажмите Enter для показа QR: "
+    )
     login = await asyncio.wait_for(client.qr_login(), timeout=30)
     # Listen before displaying: scanning may complete immediately.
     waiter = asyncio.create_task(login.wait(timeout=60))
@@ -217,6 +225,55 @@ async def authorize_qr(client):
         if not waiter.done():
             waiter.cancel()
         await asyncio.gather(waiter, return_exceptions=True)
+
+
+async def authorize_2fa(client):
+    import getpass
+
+    for attempt in range(3):
+        password = await asyncio.to_thread(
+            getpass.getpass, "Пароль 2FA Telegram (скрытый ввод): "
+        )
+        if not password:
+            raise ManualRequired("Вход отменён: пароль 2FA не введён.")
+        try:
+            await asyncio.wait_for(client.sign_in(password=password), timeout=30)
+            return
+        except PasswordHashInvalidError:
+            if attempt == 2:
+                raise ManualRequired(
+                    "Telegram отклонил пароль 2FA три раза. Вход остановлен."
+                ) from None
+            print(
+                "Telegram отклонил пароль 2FA. Проверьте раскладку; это облачный пароль, а не код входа."
+            )
+        finally:
+            password = None
+
+
+def login_failure(error, stage):
+    # Never include provider messages, request objects or arbitrary exception text.
+    if isinstance(error, FloodWaitError):
+        return f"Telegram ограничил попытки входа. Повторите не раньше чем через {error.seconds} сек."
+    codes = {
+        "AuthKeyDuplicatedError": "Telegram отклонил ключ сессии как дублирующийся",
+        "AuthKeyUnregisteredError": "Telegram не признал ключ сессии",
+        "SessionRevokedError": "Сессия отозвана в Telegram",
+        "PhoneCodeInvalidError": "Telegram отклонил код входа",
+        "PhoneCodeExpiredError": "Код входа истёк",
+        "SecurityError": "Проверка безопасности ответа Telegram не пройдена",
+        "EOFError": "Ввод в терминале закрыт",
+        "KeyboardInterrupt": "Вход отменён оператором",
+        "TimeoutError": "Истекло время ожидания ответа",
+        "ConnectionError": "Соединение с Telegram прервано",
+    }
+    error_type = type(error).__name__
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", error_type):
+        error_type = "UnknownError"
+    reason = codes.get(
+        error_type, f"Ошибка типа {error_type}; секретные подробности скрыты"
+    )
+    return f"Вход не завершён. Этап: {stage}. {reason}. Данные интеграции сохранены."
 
 
 async def authorize_local(name="Telegram account", integration_id=None, qr=False):
@@ -267,6 +324,7 @@ async def authorize_local(name="Telegram account", integration_id=None, qr=False
             item.status = "authorization_in_progress"
             db.commit()
         client = None
+        stage = "соединение"
         try:
             client = TelegramClient(
                 StringSession(credentials.get("session", "")),
@@ -277,8 +335,10 @@ async def authorize_local(name="Telegram account", integration_id=None, qr=False
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=30):
                 try:
                     if qr:
+                        stage = "QR"
                         await authorize_qr(client)
                     else:
+                        stage = "код входа"
                         phone = credentials.get("phone")
                         if not phone:
                             raise ManualRequired(
@@ -297,10 +357,10 @@ async def authorize_local(name="Telegram account", integration_id=None, qr=False
                             phone, value, phone_code_hash=phone_code_hash
                         )
                 except SessionPasswordNeededError:
-                    await client.sign_in(
-                        password=getpass.getpass("Пароль 2FA Telegram (скрытый ввод): ")
-                    )
+                    stage = "пароль 2FA"
+                    await authorize_2fa(client)
                 if qr:
+                    stage = "проверка аккаунта"
                     me = await asyncio.wait_for(client.get_me(), timeout=30)
                     expected_phone = credentials.get("phone", "").lstrip("+")
                     if (
@@ -314,6 +374,7 @@ async def authorize_local(name="Telegram account", integration_id=None, qr=False
                         )
             if not await client.is_user_authorized():
                 raise ManualRequired("Авторизация Telegram не завершена")
+            stage = "сохранение зашифрованной сессии"
             credentials = {**credentials, "session": client.session.save()}
             with SessionLocal() as db:
                 item = db.get(Integration, integration_id)
@@ -333,13 +394,7 @@ async def authorize_local(name="Telegram account", integration_id=None, qr=False
                 db.commit()
             if isinstance(error, ManualRequired):
                 raise
-            if isinstance(error, FloodWaitError):
-                raise ManualRequired(
-                    f"Telegram ограничил попытки входа. Повторите не раньше чем через {error.seconds} сек."
-                ) from None
-            raise ManualRequired(
-                "Вход не завершён. Данные сохранены; повторите локальную авторизацию. Код и пароль в чат не отправляйте"
-            ) from None
+            raise ManualRequired(login_failure(error, stage)) from None
         finally:
             try:
                 if client is not None:

@@ -409,3 +409,80 @@ def test_qr_timeout_is_bounded_and_does_not_print_login_url(monkeypatch, capsys)
         asyncio.run(authorize_qr(Client()))
     assert printed == [True]
     assert "private-one-time-token" not in capsys.readouterr().out
+
+
+def test_2fa_input_keeps_event_loop_running(monkeypatch):
+    import threading
+    from commander.sponsorship import authorize_2fa
+
+    started, release = threading.Event(), threading.Event()
+    submitted = []
+
+    def hidden(_):
+        started.set()
+        assert release.wait(2), "Terminal input blocked the networking event loop"
+        return "test-only-cloud-password"
+
+    class Client:
+        async def sign_in(self, **kwargs):
+            submitted.append(kwargs["password"])
+
+    monkeypatch.setattr("getpass.getpass", hidden)
+
+    async def exercise():
+        task = asyncio.create_task(authorize_2fa(Client()))
+        try:
+            assert await asyncio.wait_for(
+                asyncio.to_thread(started.wait, 1), timeout=1.5
+            )
+        finally:
+            release.set()
+        await task
+
+    asyncio.run(exercise())
+    assert submitted == ["test-only-cloud-password"]
+
+
+@pytest.mark.parametrize("invalid_attempts", [1, 3])
+def test_2fa_invalid_password_retries_are_bounded(
+    monkeypatch, capsys, invalid_attempts
+):
+    from commander.sponsorship import authorize_2fa
+    from telethon.errors import PasswordHashInvalidError
+
+    calls = []
+
+    class Client:
+        async def sign_in(self, **kwargs):
+            calls.append(True)
+            if len(calls) <= invalid_attempts:
+                raise PasswordHashInvalidError(request=None)
+
+    monkeypatch.setattr("getpass.getpass", lambda _: "private-password")
+    if invalid_attempts == 3:
+        with pytest.raises(ManualRequired, match="три раза"):
+            asyncio.run(authorize_2fa(Client()))
+    else:
+        asyncio.run(authorize_2fa(Client()))
+    assert len(calls) == min(invalid_attempts + 1, 3)
+    assert "private-password" not in capsys.readouterr().out
+
+
+def test_2fa_flood_never_retries_and_diagnostics_do_not_echo_exception(monkeypatch):
+    from commander.sponsorship import authorize_2fa, login_failure
+    from telethon.errors import FloodWaitError
+
+    calls = []
+
+    class Client:
+        async def sign_in(self, **kwargs):
+            calls.append(True)
+            raise FloodWaitError(request=None, capture=120)
+
+    monkeypatch.setattr("getpass.getpass", lambda _: "private-password")
+    with pytest.raises(FloodWaitError):
+        asyncio.run(authorize_2fa(Client()))
+    assert len(calls) == 1
+    diagnostic = login_failure(ValueError("private-password"), "пароль 2FA")
+    assert "ValueError" in diagnostic and "пароль 2FA" in diagnostic
+    assert "private-password" not in diagnostic

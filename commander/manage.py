@@ -48,13 +48,18 @@ def main():
     if args.command == "telethon-login":
         import asyncio
         import os
-        from .sponsorship import authorize_local
+        from .sponsorship import ManualRequired, authorize_local
 
         if args.qr and os.environ.get("AUTOIP_PRIVATE_LOGIN_TERMINAL") != "true":
             raise SystemExit(
                 "Для QR используйте сервис telegram-login с отключённым журналированием."
             )
-        asyncio.run(authorize_local(args.name, args.integration_id, qr=args.qr))
+        try:
+            asyncio.run(authorize_local(args.name, args.integration_id, qr=args.qr))
+        except ManualRequired as error:
+            raise SystemExit(str(error)) from None
+        except KeyboardInterrupt:
+            raise SystemExit("Вход отменён оператором.") from None
     elif args.command == "sponsor-agent":
         import asyncio
         from .sponsorship import sponsor_agent
