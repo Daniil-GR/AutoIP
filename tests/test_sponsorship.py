@@ -228,8 +228,9 @@ def test_telethon_rejects_noninteractive_secret_input(monkeypatch):
         asyncio.run(authorize_local(integration_id="no-network-call"))
 
 
+@pytest.mark.parametrize("address_field", ["floating_ip", "proxy_ip"])
 def test_sponsor_pending_account_stops_before_dialog_or_state_write(
-    db, monkeypatch, tmp_path
+    db, monkeypatch, tmp_path, address_field
 ):
     from sqlalchemy.orm import sessionmaker
     from commander import sponsorship
@@ -265,7 +266,7 @@ def test_sponsor_pending_account_stops_before_dialog_or_state_write(
             configuration={
                 "telethon_integration_id": "account",
                 "mtproto_integration_id": "proxy-secret",
-                "floating_ip": "1.1.1.1",
+                address_field: "1.1.1.1",
                 "sponsor_channel": "https://t.me/example",
             },
         )
@@ -486,3 +487,140 @@ def test_2fa_flood_never_retries_and_diagnostics_do_not_echo_exception(monkeypat
     diagnostic = login_failure(ValueError("private-password"), "пароль 2FA")
     assert "ValueError" in diagnostic and "пароль 2FA" in diagnostic
     assert "private-password" not in diagnostic
+
+
+@pytest.mark.parametrize("change_during_dialog", [None, "proxy_ip", "proxy_port"])
+def test_sponsor_primary_ip_and_stale_endpoint(
+    db, monkeypatch, tmp_path, change_during_dialog
+):
+    from contextlib import nullcontext
+    from sqlalchemy.orm import sessionmaker
+    from commander import sponsorship
+    from commander.config import settings
+    from commander.database import Agent, Integration, Job, Sponsorship
+    from commander.vault import encrypt, initialize
+
+    key = tmp_path / "key"
+    initialize(key)
+    monkeypatch.setattr(settings, "vault_key_file", str(key))
+    for identifier, kind, credentials in [
+        (
+            "account",
+            "telethon",
+            {"api_id": "12345", "api_hash": "a" * 32, "session": "fake-session"},
+        ),
+        ("secret", "mtproto", {"secret": "b" * 32}),
+    ]:
+        db.add(
+            Integration(
+                id=identifier,
+                kind=kind,
+                name=identifier,
+                ciphertext=encrypt(identifier, kind, credentials),
+                metadata_json={},
+            )
+        )
+    db.add(
+        Agent(
+            id="primary",
+            name="Primary",
+            token_hash="unused",
+            proxy_port=9443,
+            configuration={
+                "proxy_ip": "1.1.1.1",
+                "telethon_integration_id": "account",
+                "mtproto_integration_id": "secret",
+                "sponsor_channel": "https://t.me/example",
+            },
+        )
+    )
+    db.commit()
+    factory = sessionmaker(db.bind, expire_on_commit=False)
+    monkeypatch.setattr(sponsorship, "SessionLocal", factory)
+    monkeypatch.setattr(sponsorship, "account_lock", lambda _: nullcontext())
+    monkeypatch.setattr(sponsorship, "StringSession", lambda _: "fake-session")
+
+    class Conversation:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    class Client:
+        def __init__(self, *args):
+            pass
+
+        async def connect(self):
+            pass
+
+        async def disconnect(self):
+            pass
+
+        async def is_user_authorized(self):
+            return True
+
+        def conversation(self, *args, **kwargs):
+            return Conversation()
+
+    async def register(conversation, endpoint, secret, checkpoint):
+        assert endpoint == "1.1.1.1:9443"
+        await checkpoint("REGISTERED", "c" * 32)
+        return "c" * 32
+
+    async def promote(conversation, endpoint, channel):
+        assert endpoint == "1.1.1.1:9443"
+        assert channel == "https://t.me/example"
+        if change_during_dialog:
+            with factory() as session:
+                agent = session.get(Agent, "primary")
+                if change_during_dialog == "proxy_ip":
+                    agent.configuration = {**agent.configuration, "proxy_ip": "8.8.8.8"}
+                else:
+                    agent.proxy_port = 443
+                session.commit()
+
+    monkeypatch.setattr(sponsorship, "TelegramClient", Client)
+    monkeypatch.setattr(sponsorship, "register", register)
+    monkeypatch.setattr(sponsorship, "promote", promote)
+    if change_during_dialog:
+        with pytest.raises(ManualRequired):
+            asyncio.run(
+                sponsorship.sponsor_agent("primary", approve_new_registration=True)
+            )
+    else:
+        asyncio.run(sponsorship.sponsor_agent("primary", approve_new_registration=True))
+    db.expire_all()
+    state = db.get(Sponsorship, "primary")
+    assert state.status == (
+        "PROMOTION_MANUAL_REQUIRED" if change_during_dialog else "AD_TAG_PENDING"
+    )
+    assert db.query(Job).count() == (0 if change_during_dialog else 1)
+
+
+def test_tag_result_keeps_registration_identity(db):
+    from commander.app import JobResult, job_result
+    from commander.database import Agent, Job, Sponsorship
+
+    agent = Agent(id="tag-agent", name="Tag agent", token_hash="unused")
+    job = Job(
+        id="tag-job",
+        agent_id=agent.id,
+        kind="apply_ad_tag",
+        status="leased",
+        payload={"ad_tag": "c" * 32},
+        attempts=1,
+    )
+    details = {"endpoint": "1.1.1.1:9443", "account_id": "account"}
+    state = Sponsorship(agent_id=agent.id, status="AD_TAG_PENDING", details=details)
+    db.add_all([agent, job, state])
+    db.commit()
+    job_result(
+        job.id,
+        JobResult(status="succeeded", attempt=1, result={"written": True}),
+        agent=agent,
+        db=db,
+    )
+    db.refresh(state)
+    assert state.status == "TAG_WRITTEN_UNVERIFIED"
+    assert state.details == {**details, "job_id": job.id, "reload_verified": False}

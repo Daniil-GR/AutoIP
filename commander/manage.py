@@ -64,11 +64,11 @@ def main():
     elif args.command == "sponsor-agent":
         import asyncio
         from .sponsorship import sponsor_agent
-        from .services import require_agent
+        from .services import proxy_address, require_agent
 
         with SessionLocal() as db:
             agent = require_agent(db, args.agent_id)
-            endpoint = f"{(agent.configuration or {}).get('floating_ip', '')}:{agent.proxy_port}"
+            endpoint = f"{proxy_address(agent)}:{agent.proxy_port}"
         expected = f"REGISTER {args.agent_id} {endpoint}"
         print(
             "Реальное взаимодействие с MTProxybot может изменить регистрацию. Для подтверждения введите:",

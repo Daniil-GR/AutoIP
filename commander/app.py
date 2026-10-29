@@ -451,7 +451,11 @@ def job_result(
             else "TAG_APPLY_FAILED"
         )
         sponsorship.ad_tag = job.payload.get("ad_tag")
-        sponsorship.details = {"job_id": job.id, "reload_verified": False}
+        sponsorship.details = {
+            **(sponsorship.details or {}),
+            "job_id": job.id,
+            "reload_verified": False,
+        }
         sponsorship.updated_at = utcnow()
         db.add(
             Notification(

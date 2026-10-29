@@ -29,7 +29,7 @@ from .database import (
     utcnow,
 )
 from .security import audit
-from .services import require_agent
+from .services import proxy_address, require_agent
 from .vault import decrypt, encrypt
 
 
@@ -416,9 +416,9 @@ async def sponsor_agent(agent_id, approve_new_registration=False):
             or user_secret.kind != "mtproto"
         ):
             raise ManualRequired("Нужны отдельные Telethon и MTProto secret интеграции")
-        ip, channel = config.get("floating_ip"), config.get("sponsor_channel")
+        ip, channel = proxy_address(agent), config.get("sponsor_channel")
         if not ip or not channel:
-            raise ManualRequired("Не настроены Floating IP и спонсорский канал")
+            raise ManualRequired("Не настроены публичный IP прокси и спонсорский канал")
         endpoint = f"{ip}:{agent.proxy_port}"
         account_id, credentials = account.id, decrypt(account)
         if not credentials.get("session"):
@@ -480,8 +480,10 @@ async def sponsor_agent(agent_id, approve_new_registration=False):
                 await promote(conversation, endpoint, channel)
             with SessionLocal() as db:
                 current = require_agent(db, agent_id, lock=True)
-                if (current.configuration or {}).get("floating_ip") != ip:
-                    raise ManualRequired("IP агента изменился во время диалога")
+                if f"{proxy_address(current)}:{current.proxy_port}" != endpoint:
+                    raise ManualRequired(
+                        "IP или порт агента изменился во время диалога"
+                    )
                 state = db.get(Sponsorship, agent_id)
                 state.status, state.updated_at = "AD_TAG_PENDING", utcnow()
                 db.add(
