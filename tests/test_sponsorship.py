@@ -29,7 +29,16 @@ def test_tag_parser_does_not_treat_user_secret_as_ad_tag():
 
 def test_expected_prompts_and_exact_proxy_selection():
     assert expects("Please send your IP address and port", "endpoint")
+    assert expects(
+        "Registering a new proxy server. Please send me its address in the format host:port.",
+        "endpoint",
+    )
     assert expects("Send the secret", "secret")
+    assert expects(
+        "New promoted channel has been set. It may take some time (up to 1 hour) for Telegram clients to apply these settings.",
+        "promotion_saved",
+    )
+    assert not expects("Invalid promotion: channel has not been set", "promotion_saved")
     assert not expects("Invalid secret", "secret")
     message = SimpleNamespace(
         buttons=[
@@ -568,7 +577,7 @@ def test_sponsor_primary_ip_and_stale_endpoint(
         await checkpoint("REGISTERED", "c" * 32)
         return "c" * 32
 
-    async def promote(conversation, endpoint, channel):
+    async def promote(conversation, endpoint, channel, tag=None):
         assert endpoint == "1.1.1.1:9443"
         assert channel == "https://t.me/example"
         if change_during_dialog:
@@ -624,3 +633,96 @@ def test_tag_result_keeps_registration_identity(db):
     db.refresh(state)
     assert state.status == "TAG_WRITTEN_UNVERIFIED"
     assert state.details == {**details, "job_id": job.id, "reload_verified": False}
+
+
+@pytest.mark.parametrize("variant", ["ip_tag", "endpoint", "wrong_tag", "wrong_port"])
+def test_real_bot_promotion_labels_and_selected_endpoint(variant):
+    from commander.sponsorship import promote
+
+    sent, clicked = [], []
+    tag = "a" * 32
+    label = (
+        "1.1.1.1:9443"
+        if variant == "endpoint"
+        else "1.1.1.1 " + ("b" * 32 if variant == "wrong_tag" else tag)
+    )
+
+    created = []
+
+    async def get_messages(*args, **kwargs):
+        return [next(replies)]
+
+    class Message:
+        def __init__(self, text, buttons=()):
+            self.id = len(created) + 1
+            created.append(self)
+            self.chat_id, self.out = 123, False
+            self.client = SimpleNamespace(get_messages=get_messages)
+            self.raw_text = text
+            self.buttons = [[SimpleNamespace(text=b) for b in row] for row in buttons]
+
+        async def click(self, row, column):
+            clicked.append(self.buttons[row][column].text)
+
+    replies = iter(
+        [
+            Message("Here is the list of all proxies you created:", [[label]]),
+            Message(
+                f"Proxy 1.1.1.1:{443 if variant == 'wrong_port' else 9443} with the tag {tag}.",
+                [["Set promotion", "Stats"], ["Delete proxy"]],
+            ),
+            Message(
+                "Please send a public channel username in the format @channel or t.me/channel."
+            ),
+            Message(
+                "New promoted channel has been set. It may take some time (up to 1 hour) for Telegram clients to apply these settings."
+            ),
+        ]
+    )
+
+    class Conversation:
+        async def send_message(self, message):
+            sent.append(message)
+
+        async def get_response(self):
+            return next(replies)
+
+    operation = promote(Conversation(), "1.1.1.1:9443", "https://t.me/example", tag)
+    if variant in ("wrong_tag", "wrong_port"):
+        with pytest.raises(ManualRequired):
+            asyncio.run(operation)
+        assert sent == ["/myproxies"]
+        assert "Set promotion" not in clicked
+    else:
+        asyncio.run(operation)
+        assert sent == ["/myproxies", "https://t.me/example"]
+        assert clicked == [label, "Set promotion"]
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_callback_accepts_edited_or_new_bot_reply_and_ignores_outgoing(edited):
+    from commander.sponsorship import click_reply
+
+    clicked = []
+    reply = SimpleNamespace(
+        id=10 if edited else 11, out=False, raw_text="Proxy 1.1.1.1:9443", buttons=[]
+    )
+
+    async def get_messages(chat_id, limit):
+        assert chat_id == 123 and limit == 5
+        return [SimpleNamespace(id=12, out=True), reply]
+
+    async def click(row, column):
+        clicked.append((row, column))
+
+    message = SimpleNamespace(
+        id=10,
+        chat_id=123,
+        out=False,
+        raw_text="Here is the list",
+        buttons=[],
+        client=SimpleNamespace(get_messages=get_messages),
+        click=click,
+    )
+    assert asyncio.run(click_reply(message, 0, 0)) is reply
+    assert clicked == [(0, 0)]

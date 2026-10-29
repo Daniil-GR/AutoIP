@@ -47,6 +47,7 @@ from .services import (
 )
 from .vault import decrypt
 from .policy import get_policy
+from .sponsorship import status_label as sponsorship_label
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -233,7 +234,7 @@ def agent_view(db, user_id, agent_id, mode):
         f"MTProto: {status_label(evidence.get('mtproto_status', 'UNKNOWN'))}\n"
         f"Веб-прокси: {web_state}\n"
         f"SNI РФ / зарубежье: {sni_state}\n"
-        f"Спонсорство: {sponsor.status if sponsor else 'не настроено'}\n"
+        f"Спонсорство: {sponsorship_label(sponsor.status if sponsor else None)}\n"
         f"Автоматизация: {'приостановлена' if agent.paused else 'ручной безопасный режим'}"
     )
     rows = [

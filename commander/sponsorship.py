@@ -1,7 +1,7 @@
 """Conservative MTProxybot dialog adapter, isolated from proxy availability.
 
 Only explicit local operator approval can start a new registration. The live
-bot interface is unverified; any unexpected message stops the conversation.
+bot interface was piloted on 2026-10-29; unexpected messages still stop the conversation.
 """
 
 import asyncio
@@ -35,6 +35,22 @@ from .vault import decrypt, encrypt
 
 class ManualRequired(RuntimeError):
     pass
+
+
+def status_label(status):
+    return {
+        "AD_TAG_PENDING": "Ожидается применение тега",
+        "TAG_WRITTEN_UNVERIFIED": "Тег записан; применение ещё не проверено",
+        "TAG_APPLY_FAILED": "Не удалось применить тег",
+        "TAG_APPLIED_AWAITING_CLIENT": "Тег применён; ожидается проверка канала в клиенте",
+        "REGISTERING": "Регистрация прокси",
+        "REGISTRATION_SUBMITTING": "Отправлена регистрация",
+        "REGISTRATION_UNCERTAIN": "Нужна сверка регистрации с MTProxybot",
+        "REGISTERED": "Прокси зарегистрирован",
+        "PROMOTING": "Назначение канала",
+        "PROMOTION_CONFIRMED": "Канал назначен",
+        "PROMOTION_MANUAL_REQUIRED": "Нужна ручная проверка канала",
+    }.get(status, "Не настроено" if not status else "Требуется проверка")
 
 
 def login_delivery(sent):
@@ -108,10 +124,10 @@ def parse_tag(message, secret):
 
 def expects(message, kind):
     patterns = {
-        "endpoint": r"(?:ip.?address|ip\s*:\s*port|ip.*port|адрес.*порт)",
+        "endpoint": r"(?:ip.?address|(?:ip|host)\s*:\s*port|ip.*port|адрес.*порт)",
         "secret": r"(?:\bsecret\b|секрет)",
         "channel": r"(?:channel|канал)",
-        "promotion_saved": r"(?:promotion.*(?:set|updated)|(?:set|updated).*promotion|канал.*(?:установлен|назначен))",
+        "promotion_saved": r"(?:promotion.*(?:set|updated)|promoted channel has been set|(?:set|updated).*promotion|канал.*(?:установлен|назначен))",
     }
     lower = message.lower()
     return not re.search(r"\b(?:error|invalid|failed)\b|ошибк|неверн", lower) and bool(
@@ -150,23 +166,50 @@ async def register(conversation, endpoint, secret, checkpoint):
     return tag
 
 
-async def promote(conversation, endpoint, channel):
+async def click_reply(message, row, column):
+    """MTProxybot callbacks edit existing messages as well as send new ones."""
+
+    def signature(reply):
+        return reply.raw_text, tuple(
+            tuple(button.text for button in buttons) for buttons in reply.buttons or []
+        )
+
+    before = signature(message)
+    await asyncio.wait_for(message.click(row, column), timeout=30)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        replies = await asyncio.wait_for(
+            message.client.get_messages(message.chat_id, limit=5), timeout=10
+        )
+        for reply in replies:
+            if reply.out or reply.id < message.id:
+                continue
+            if reply.id > message.id or signature(reply) != before:
+                return reply
+        await asyncio.sleep(0.5)
+    raise ManualRequired("MTProxybot: после нажатия кнопки не получен новый ответ")
+
+
+async def promote(conversation, endpoint, channel, tag=None):
     await conversation.send_message("/myproxies")
     proxies = await conversation.get_response()
     row, column = matching_button(
         proxies,
         lambda label: endpoint == label.strip()
-        or label.strip().endswith(" " + endpoint),
+        or label.strip().endswith(" " + endpoint)
+        or (tag is not None and label.strip() == f"{endpoint.rsplit(':', 1)[0]} {tag}"),
     )
-    await proxies.click(row, column)
-    selected = await conversation.get_response()
+    selected = await click_reply(proxies, row, column)
+    if not re.search(
+        r"(?<![0-9.])" + re.escape(endpoint) + r"(?![0-9])", selected.raw_text
+    ):
+        raise ManualRequired("MTProxybot: выбран другой адрес или порт прокси")
     row, column = matching_button(
         selected,
         lambda label: label.strip().lower()
         in ("set promotion", "назначить канал", "установить спонсора"),
     )
-    await selected.click(row, column)
-    prompt = await conversation.get_response()
+    prompt = await click_reply(selected, row, column)
     if not expects(prompt.raw_text, "channel"):
         raise ManualRequired("MTProxybot: не получен ожидаемый запрос канала")
     await conversation.send_message(channel)
@@ -477,7 +520,7 @@ async def sponsor_agent(agent_id, approve_new_registration=False):
                 tag = existing_tag or await register(
                     conversation, endpoint, secret, checkpoint
                 )
-                await promote(conversation, endpoint, channel)
+                await promote(conversation, endpoint, channel, tag)
             with SessionLocal() as db:
                 current = require_agent(db, agent_id, lock=True)
                 if f"{proxy_address(current)}:{current.proxy_port}" != endpoint:

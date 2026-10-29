@@ -1,5 +1,5 @@
 [Unit]
-Description=AutoIP restricted Telemt config reader
+Description=AutoIP restricted Telemt config helper
 [Service]
 Type=exec
 User=root
@@ -14,5 +14,5 @@ ProtectSystem=strict
 ReadWritePaths=/etc/telemt
 PrivateTmp=true
 PrivateNetwork=true
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_FOWNER
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_FOWNER
 TimeoutStartSec=20

@@ -30,3 +30,11 @@ outside mutation scope. Preserve all records except the explicitly selected
 node's A record. Enforce `commander/dns_scope.py` at every future DNS mutation
 boundary; settings in the web panel must not expand this scope. DNS writes
 still require the owner's separate approval and a verified safe adapter.
+
+## Sponsorship evaluation
+
+The owner is testing whether a stable hostname can keep one registration and
+ad_tag across IPv4 changes. Keep sponsorship manual until the owner chooses the
+method. Do not automatically re-register proxies or rotate tags after an IP
+change. The live pilot's existing registration/tag must be preserved during this
+evaluation; Agent ad_tag write permission was closed again after the pilot.

@@ -54,6 +54,7 @@ const statuses = {
   sni_partial: "SNI-домен: частичная доступность",
   sni_unknown: "SNI-домен: нет данных",
   TAG_WRITTEN_UNVERIFIED: "Тег записан; hot reload не проверен",
+  TAG_APPLIED_AWAITING_CLIENT: "Тег применён; ожидается проверка канала в клиенте",
   TAG_APPLY_FAILED: "Тег не применён",
   PROMOTION_MANUAL_REQUIRED: "Нужна ручная настройка канала",
   AD_TAG_PENDING: "Ожидается применение тега",
