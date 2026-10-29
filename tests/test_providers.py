@@ -24,16 +24,16 @@ def test_dns_plan_lossless_and_write_blocked():
         ],
     }
     before = copy.deepcopy(snapshot)
-    plan = dns_plan(snapshot, "example.com", "proxy.example.com", "8.8.8.8", "1.1.1.1")
+    plan = dns_plan(snapshot, "vetka.rest", "proxy.vetka.rest", "8.8.8.8", "1.1.1.1")
     assert snapshot == before
     expected = copy.deepcopy(before)
     expected["dns_sub_list"][0]["record_value1"] = "1.1.1.1"
     assert plan["planned"] == expected
     assert not plan["auto_apply_allowed"]
     with pytest.raises(ValueError):
-        dns_plan(snapshot, "example.com", "proxy.example.com", "9.9.9.9", "1.1.1.1")
+        dns_plan(snapshot, "vetka.rest", "proxy.vetka.rest", "9.9.9.9", "1.1.1.1")
     with pytest.raises(ValueError):
-        dns_plan(snapshot, "example.com", "foreign.example.net", "8.8.8.8", "1.1.1.1")
+        dns_plan(snapshot, "vetka.rest", "foreign.example.net", "8.8.8.8", "1.1.1.1")
     snapshot["dns_sub_list"].append(copy.deepcopy(snapshot["dns_sub_list"][0]))
     with pytest.raises(ValueError):
-        dns_plan(snapshot, "example.com", "proxy.example.com", "8.8.8.8", "1.1.1.1")
+        dns_plan(snapshot, "vetka.rest", "proxy.vetka.rest", "8.8.8.8", "1.1.1.1")

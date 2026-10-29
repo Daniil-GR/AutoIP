@@ -3,10 +3,11 @@
 import base64
 import hashlib
 import hmac
-import re
 from uuid import uuid4
 
 import httpx
+
+from .dns_scope import MANAGED_DNS_ZONE, managed_zone
 
 
 class DynadotError(RuntimeError):
@@ -28,11 +29,11 @@ class Dynadot:
         self.api_key, self.api_secret = api_key, api_secret
 
     async def get(self, path, params=None):
-        if path not in ("/accounts/info", "/domains") and not re.fullmatch(
-            r"/domains/(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}/records",
-            path,
+        if params or path not in (
+            "/accounts/info",
+            f"/domains/{MANAGED_DNS_ZONE}/records",
         ):
-            raise ValueError("Недопустимый путь Dynadot inventory")
+            raise ValueError("Dynadot: доступ разрешён только к зоне vetka.rest")
         request_id = str(uuid4())
         request = httpx.Request(
             "GET", "https://api.dynadot.com/restful/v2" + path, params=params
@@ -72,20 +73,22 @@ class Dynadot:
     async def domains(self, page=1):
         if not 1 <= page <= 10000:
             raise ValueError("Некорректная страница")
-        data = await self.get("/domains", {"page": page, "page_size": 100})
-        domains = data.get("domain_info_list", data.get("domain_list"))
-        if not isinstance(domains, list) or any(
-            not isinstance(d, dict) for d in domains
-        ):
-            raise DynadotError()
+        # Never enumerate the account: unrelated domains stay outside AutoIP.
+        if page > 1:
+            return {
+                "domains": [],
+                "pagination": {"has_next_page": False},
+                "writes_enabled": False,
+            }
+        await self.records(MANAGED_DNS_ZONE)
         return {
-            "domains": [
-                {"domain_name": d.get("domain_name"), "status": d.get("status")}
-                for d in domains
-            ],
-            "pagination": data.get("pagination_result", {}),
+            "domains": [{"domain_name": MANAGED_DNS_ZONE, "status": "accessible"}],
+            "pagination": {"has_next_page": False},
             "writes_enabled": False,
         }
 
     async def records(self, domain):
+        domain = managed_zone(domain)
+        if not domain:
+            raise ValueError("Требуется DNS-зона vetka.rest")
         return await self.get("/domains/" + domain + "/records")

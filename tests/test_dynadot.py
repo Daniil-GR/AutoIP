@@ -46,6 +46,7 @@ def test_inventory_is_signed_and_returns_only_allowlisted_fields(monkeypatch):
             )
             assert request.headers["Authorization"] == "Bearer key"
             assert request.method == "GET" and request.content == b""
+            assert request.url.path == "/restful/v2/domains/vetka.rest/records"
             return httpx.Response(
                 200,
                 request=request,
@@ -54,7 +55,7 @@ def test_inventory_is_signed_and_returns_only_allowlisted_fields(monkeypatch):
                     "data": {
                         "domain_info_list": [
                             {
-                                "domain_name": "example.com",
+                                "domain_name": "unrelated.example",
                                 "status": "active",
                                 "registrant_contact_id": "do-not-expose",
                             }
@@ -66,7 +67,7 @@ def test_inventory_is_signed_and_returns_only_allowlisted_fields(monkeypatch):
 
     monkeypatch.setattr("commander.dynadot.httpx.AsyncClient", Client)
     result = asyncio.run(Dynadot("key", "secret").domains())
-    assert result["domains"] == [{"domain_name": "example.com", "status": "active"}]
+    assert result["domains"] == [{"domain_name": "vetka.rest", "status": "accessible"}]
     assert not result["writes_enabled"] and "do-not-expose" not in str(result)
     assert len(requests) == 1
 

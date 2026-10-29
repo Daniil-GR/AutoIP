@@ -20,3 +20,13 @@ Treat this as a live-infrastructure safety-critical management application. Exis
 ## Priority
 
 Finish secure onboarding and persistent per-agent configuration first, then monitoring/incident state machine. Only then begin isolated, audited provider mutation adapters and sponsorship bot behavior.
+
+## Owner's DNS boundary
+
+AutoIP may manage only subdomains of `vetka.rest`. The first node uses
+`lt.vetka.rest`. Never use or change other domains in the Dynadot account;
+do not enumerate account-wide domains. The apex record of `vetka.rest` is
+outside mutation scope. Preserve all records except the explicitly selected
+node's A record. Enforce `commander/dns_scope.py` at every future DNS mutation
+boundary; settings in the web panel must not expand this scope. DNS writes
+still require the owner's separate approval and a verified safe adapter.

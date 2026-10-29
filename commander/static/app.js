@@ -511,8 +511,8 @@ async function editAgent(a) {
     ["cherry_project_id", "Cherry Project ID"],
     ["cherry_server_id", "Cherry Server ID"],
     ["dns_integration_id", "Интеграция Dynadot"],
-    ["dns_zone", "DNS-зона, example.com"],
-    ["dns_record", "Полное имя записи, proxy.example.com"],
+    ["dns_zone", "DNS-зона — только vetka.rest"],
+    ["dns_record", "Поддомен vetka.rest, например lt.vetka.rest"],
     ["telethon_integration_id", "Telegram-аккаунт Telethon"],
     ["mtproto_integration_id", "Секрет MTProto (из хранилища)"],
     ["checker_integration_id", "MTProto Checker (только MTProto)"],
@@ -987,7 +987,7 @@ async function settings(root) {
     "number",
   );
   const monitoring = field("Включить плановые проверки", "", "checkbox");
-  const dnsZone = field("DNS-зона для новых агентов", s.default_dns_zone || "");
+  const dnsZone = field("DNS-зона для новых агентов — только vetka.rest", s.default_dns_zone || "");
   const atlasFallback = field(
     "Разрешить резервный RIPE Atlas и расход его кредитов (не чаще раза в час на агента)",
     "",

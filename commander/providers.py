@@ -79,6 +79,11 @@ def dns_plan(snapshot, zone, host, old_ip, new_ip):
     import copy
     import ipaddress
 
+    from .dns_scope import managed_record, managed_zone
+
+    zone, host = managed_zone(zone), managed_record(host)
+    if not zone or not host:
+        raise ValueError("Требуются зона vetka.rest и её поддомен")
     for address in (old_ip, new_ip):
         if not ipaddress.IPv4Address(address).is_global:
             raise ValueError("Требуется публичный IPv4")

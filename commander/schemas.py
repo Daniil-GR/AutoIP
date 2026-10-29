@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .dns_scope import managed_record, managed_zone
+
 
 class AgentConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -33,6 +35,16 @@ class AgentConfiguration(BaseModel):
     max_billed_ips: int = Field(default=2, ge=1, le=10)
     monthly_budget_cents: int = Field(default=0, ge=0, le=10000000)
     automation_mode: Literal["manual", "paused"] = "manual"
+
+    @field_validator("dns_zone")
+    @classmethod
+    def scoped_dns_zone(cls, value):
+        return managed_zone(value)
+
+    @field_validator("dns_record")
+    @classmethod
+    def scoped_dns_record(cls, value):
+        return managed_record(value)
 
     @field_validator("web_proxy_host")
     @classmethod
@@ -167,12 +179,7 @@ class CommanderPolicy(BaseModel):
     @field_validator("default_dns_zone")
     @classmethod
     def dns_zone(cls, value):
-        value = value.strip().lower().rstrip(".")
-        if value and not re.fullmatch(
-            r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", value
-        ):
-            raise ValueError("Требуется DNS-зона, например example.com")
-        return value
+        return managed_zone(value)
 
     @field_validator("telegram_admin_ids")
     @classmethod

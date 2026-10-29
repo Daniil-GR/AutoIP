@@ -124,13 +124,13 @@ def test_default_dns_zone_is_copied_once_without_selecting_proxy_record(client):
         )
     assert (
         client.put(
-            "/api/settings", json={"default_dns_zone": "  EXAMPLE.COM. "}, auth=auth
+            "/api/settings", json={"default_dns_zone": "  VETKA.REST. "}, auth=auth
         ).status_code
         == 200
     )
     assert (
         client.get("/api/settings", auth=auth).json()["default_dns_zone"]
-        == "example.com"
+        == "vetka.rest"
     )
     ticket = client.post(
         "/api/enrollments", json={"name": "DNS defaults"}, auth=auth
@@ -140,7 +140,7 @@ def test_default_dns_zone_is_copied_once_without_selecting_proxy_record(client):
     ).json()["agent_id"]
     path = f"/api/agents/{agent}/configuration"
     config = client.get(path, auth=auth).json()
-    assert config["dns_zone"] == "example.com"
+    assert config["dns_zone"] == "vetka.rest"
     assert (
         config["dns_record"]
         == config["floating_ip"]
@@ -149,11 +149,11 @@ def test_default_dns_zone_is_copied_once_without_selecting_proxy_record(client):
     )
     assert (
         client.put(
-            "/api/settings", json={"default_dns_zone": "another.example"}, auth=auth
+            "/api/settings", json={"default_dns_zone": ""}, auth=auth
         ).status_code
         == 200
     )
-    assert client.get(path, auth=auth).json()["dns_zone"] == "example.com"
-    config["dns_zone"] = "individual.example"
+    assert client.get(path, auth=auth).json()["dns_zone"] == "vetka.rest"
+    config["dns_zone"] = ""
     assert client.put(path, json=config, auth=auth).status_code == 200
-    assert client.get(path, auth=auth).json()["dns_zone"] == "individual.example"
+    assert client.get(path, auth=auth).json()["dns_zone"] == ""
