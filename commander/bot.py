@@ -41,6 +41,7 @@ from .services import (
     online,
     recovery_plan,
     request_check,
+    request_sni_check,
     require_agent,
     set_paused,
 )
@@ -133,7 +134,16 @@ def menu(db, user_id):
         ("📜 История операций", "history"),
         ("⚙️ Настройки автоматизации", "automation"),
     ]
-    return keyboard([[button(db, user_id, label, action)] for label, action in entries])
+    rows = [[button(db, user_id, label, action)] for label, action in entries]
+    if settings.public_url.startswith("https://"):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🌐 Открыть веб-панель", url=settings.public_url
+                )
+            ]
+        )
+    return keyboard(rows)
 
 
 def agent_buttons(db, user_id, mode, offset=0):
@@ -176,17 +186,36 @@ def agent_view(db, user_id, agent_id, mode):
     )
     sponsor = db.get(Sponsorship, agent.id)
     config = agent.configuration or {}
+    sni = db.scalar(
+        select(Check)
+        .where(Check.agent_id == agent.id, Check.result.startswith("sni_"))
+        .order_by(Check.created_at.desc())
+        .limit(1)
+    )
+    sni_state = (
+        {
+            "suspected_ru_filtering": "возможна фильтрация в РФ; нужна перепроверка",
+            "ru_accessible": "доступен на выбранных зондах РФ",
+            "inconclusive": "недостаточно данных",
+        }.get((sni.details or {}).get("comparison"), "нет сравнительных проверок")
+        if sni
+        else "нет проверок"
+    )
     text = (
         f"🖥 {agent.name}\n{agent.public_host or 'Домен не определён'}:{agent.proxy_port}\n"
+        f"DNS: {config.get('dns_record') or 'не задан'}\n"
         f"Floating IP: {config.get('floating_ip') or 'не настроен'}\n"
+        f"Исходный IPv4 прокси: {config.get('proxy_ip') or 'не указан'}\n"
         f"Связь: {'онлайн' if online(agent) else 'нет heartbeat'}\n"
         f"Telemt: {agent.facts.get('telemt_service', 'неизвестно')}\n"
         f"Мониторинг: {check.result if check else 'нет проверок'}\n"
+        f"SNI РФ / зарубежье: {sni_state}\n"
         f"Спонсорство: {sponsor.status if sponsor else 'не настроено'}\n"
         f"Автоматизация: {'приостановлена' if agent.paused else 'ручной безопасный режим'}"
     )
     rows = [
         [button(db, user_id, "🔍 Проверить из РФ", "check", agent.id)],
+        [button(db, user_id, "SNI: РФ и три страны", "prepare_sni", agent.id)],
         [
             button(
                 db,
@@ -265,6 +294,41 @@ def dispatch_action(db, user_id, item):
         text = f"Проверка поставлена в очередь.\nЗадание: {task.id}\nРезультат появится в карточке агента и панели."
         markup = keyboard(
             [[button(db, user_id, "Обновить статус агента", "agent:checks", target)]]
+        )
+    elif action == "prepare_sni":
+        agent = require_agent(db, target)
+        integrations = db.scalars(
+            select(Integration).where(Integration.kind == "ripe_atlas").limit(10)
+        ).all()
+        text = f"RIPE Atlas · {agent.name}\nОдин IPv4 и SNI: РФ, Германия, Нидерланды, Финляндия. Измерение расходует кредиты RIPE Atlas. Неполное покрытие и таймаут не доказывают блокировку."
+        if not integrations:
+            text += "\nСначала сохраните ключ RIPE Atlas в защищённой веб-панели. Секреты в Telegram не вводите."
+        markup = keyboard(
+            [
+                [
+                    button(
+                        db,
+                        user_id,
+                        "Подтвердить расход кредитов: " + i.name[:40],
+                        "confirm_sni",
+                        target + ":" + i.id,
+                        5,
+                    )
+                ]
+                for i in integrations
+            ]
+            + [[button(db, user_id, "Отмена", "menu")]]
+        )
+    elif action == "confirm_sni":
+        agent_id, integration_id = target.split(":", 1)
+        task = request_sni_check(db, agent_id, integration_id, actor)
+        text = (
+            "Проверка SNI поставлена в очередь: "
+            + task.id
+            + ". Результат появится в мониторинге панели и карточке агента."
+        )
+        markup = keyboard(
+            [[button(db, user_id, "Обновить агента", "agent:checks", agent_id)]]
         )
     elif action in ("pause", "resume"):
         set_paused(db, target, action == "pause", actor)

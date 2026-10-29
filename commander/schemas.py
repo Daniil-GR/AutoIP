@@ -10,6 +10,7 @@ class AgentConfiguration(BaseModel):
     provider: Literal["cherry", "other"] = "cherry"
     region: str = Field(default="", max_length=80)
     management_ip: str = ""
+    proxy_ip: str = ""
     floating_ip: str = ""
     cherry_integration_id: str = ""
     cherry_project_id: str = Field(default="", max_length=100)
@@ -28,7 +29,7 @@ class AgentConfiguration(BaseModel):
     monthly_budget_cents: int = Field(default=0, ge=0, le=10000000)
     automation_mode: Literal["manual", "paused"] = "manual"
 
-    @field_validator("management_ip", "floating_ip")
+    @field_validator("management_ip", "proxy_ip", "floating_ip")
     @classmethod
     def valid_ip(cls, value):
         if value:

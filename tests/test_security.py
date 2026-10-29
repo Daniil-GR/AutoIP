@@ -55,8 +55,17 @@ def test_login_throttled_and_password_not_logged(client):
 
 
 def test_totp_disables_basic_bypass(client, tmp_path, monkeypatch):
+    from datetime import datetime
+    from types import SimpleNamespace
     import pyotp
 
+    class FixedTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 29, 12, 0, 10, tzinfo=tz)
+
+    # The HTTP round trip must not race a real 30-second OTP boundary.
+    monkeypatch.setattr(pyotp.totp, "datetime", SimpleNamespace(datetime=FixedTime))
     secret = pyotp.random_base32()
     path = tmp_path / "totp"
     path.write_text(secret)
@@ -65,7 +74,7 @@ def test_totp_disables_basic_bypass(client, tmp_path, monkeypatch):
     body = {
         "username": settings.admin_user,
         "password": settings.admin_password,
-        "otp": "000000",
+        "otp": str((int(pyotp.TOTP(secret).now()) + 1) % 1000000).zfill(6),
     }
     assert client.post("/api/session", json=body).status_code == 401
     body["otp"] = pyotp.TOTP(secret).now()

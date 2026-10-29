@@ -8,7 +8,7 @@ from sqlalchemy import or_, select
 
 from .database import Agent, ControlTask, SessionLocal, utcnow
 from .monitor import collect, verdict
-from .services import online, record_evidence, schedule
+from .services import online, proxy_address, record_evidence, schedule
 
 log = logging.getLogger(__name__)
 
@@ -48,10 +48,10 @@ async def tick():
         task_id, agent_id, host, port = (
             task.id,
             agent.id,
-            agent.public_host,
+            (agent.configuration or {}).get("dns_record") or agent.public_host,
             agent.proxy_port,
         )
-        observed_ip = (agent.configuration or {}).get("floating_ip", "")
+        observed_ip = proxy_address(agent)
         kind = task.kind
         db.commit()
     try:
@@ -66,7 +66,7 @@ async def tick():
                 select(ControlTask).where(ControlTask.id == task_id).with_for_update()
             )
             agent = db.get(Agent, agent_id)
-            if observed_ip != (agent.configuration or {}).get("floating_ip", ""):
+            if observed_ip != proxy_address(agent):
                 task.status, task.result = (
                     "failed",
                     {"error": "IP изменился во время проверки"},

@@ -102,3 +102,19 @@ def test_transport_validation(monkeypatch, url):
     monkeypatch.setattr(main, "COMMANDER", url)
     with pytest.raises(RuntimeError):
         main.check_transport()
+
+
+def test_unreadable_config_parent_does_not_prevent_heartbeat(monkeypatch):
+    from agent import main
+
+    class Unreadable:
+        def is_file(self):
+            raise PermissionError("private parent")
+
+    monkeypatch.setattr(main, "TELEMT_PATH", Unreadable())
+    monkeypatch.setattr(main, "run", lambda *args, **kwargs: "inactive")
+    monkeypatch.setattr(main, "read_config_facts", lambda: {"config_readable": False})
+    monkeypatch.setattr(main, "network_facts", lambda: {})
+    result = main.facts()
+    assert result["config_found"] is None
+    assert result["config_readable"] is False

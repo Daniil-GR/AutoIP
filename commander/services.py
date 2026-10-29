@@ -25,6 +25,11 @@ from .security import audit, aware, display_time
 ACTIVE_INCIDENTS = ("WAITING_CONFIRMATION", "RECHECKING", "BLOCK_CONFIRMED")
 
 
+def proxy_address(agent):
+    config = agent.configuration or {}
+    return config.get("floating_ip") or config.get("proxy_ip") or ""
+
+
 def require_agent(db, agent_id, lock=False):
     query = select(Agent).where(Agent.id == agent_id)
     item = db.scalar(query.with_for_update() if lock else query)
@@ -210,7 +215,7 @@ def record_evidence(db, agent_id, evidence, result, incident_id=None):
         .where(Incident.agent_id == agent_id, Incident.status.in_(ACTIVE_INCIDENTS))
         .with_for_update()
     )
-    current_ip = (agent.configuration or {}).get("floating_ip", "")
+    current_ip = proxy_address(agent)
     if active and active.observed_ip != current_ip:
         active.status, active.closed_at, active.next_check_at = (
             "SUPERSEDED",
@@ -425,3 +430,50 @@ def record_monitor_health(db, agent, evidence):
         stored.value = {"failed": failed}
     else:
         db.add(SystemSetting(key=key, value={"failed": failed}))
+
+
+def request_sni_check(db, agent_id, integration_id, actor):
+    from .monitor import PUBLIC_HOST
+
+    agent = require_agent(db, agent_id, lock=True)
+    if agent.revoked:
+        raise HTTPException(409, "Агент отозван")
+    integration = db.get(Integration, integration_id)
+    host = (
+        (agent.configuration or {}).get("sni_domain")
+        or agent.facts.get("tls_domain")
+        or ""
+    )
+    if (
+        not integration
+        or integration.kind != "ripe_atlas"
+        or not PUBLIC_HOST.fullmatch(host)
+        or not proxy_address(agent)
+    ):
+        raise HTTPException(
+            422, "Укажите RIPE Atlas интеграцию, SNI-домен и IPv4 прокси"
+        )
+    existing = db.scalar(
+        select(ControlTask).where(
+            ControlTask.agent_id == agent_id,
+            ControlTask.kind == "sni",
+            ControlTask.status.in_(["queued", "running", "submission_uncertain"]),
+        )
+    )
+    if existing:
+        return existing
+    task = ControlTask(
+        agent_id=agent_id,
+        kind="sni",
+        dedup_key="sni:" + str(uuid4()),
+        payload={
+            "integration_id": integration.id,
+            "host": host,
+            "target_ip": proxy_address(agent),
+            "port": agent.proxy_port,
+        },
+    )
+    db.add(task)
+    db.flush()
+    audit(db, actor, "sni_check_credits_approved", task.id)
+    return task

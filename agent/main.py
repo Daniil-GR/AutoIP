@@ -151,12 +151,16 @@ def network_facts():
 
 
 def facts():
+    try:
+        config_found = TELEMT_PATH.is_file()
+    except OSError:
+        config_found = None  # An unreadable parent directory is not proof of absence.
     result = {
         "hostname": platform.node(),
         "os": platform.platform(),
         "telemt_version": run(["telemt", "--version"]),
         "telemt_service": run(["systemctl", "is-active", "telemt"]),
-        "config_found": TELEMT_PATH.is_file(),
+        "config_found": config_found,
     }
     discovered = read_config_facts()
     result.update(

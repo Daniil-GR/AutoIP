@@ -110,3 +110,43 @@ def test_access_guard_rejects_groups_and_unknown_users(monkeypatch):
     )
     asyncio.run(guard(handler, event, {}))
     assert called == [True]
+
+
+def test_sni_bot_requires_confirmation_and_uses_shared_deduped_task(db, monkeypatch):
+    from commander.database import Integration, FloatingIP
+    from commander.services import proxy_address, request_sni_check
+
+    monkeypatch.setattr(settings, "telegram_admin_ids", [1])
+    a = Agent(
+        name="Primary only",
+        token_hash="primary-only",
+        facts={},
+        configuration={
+            "management_ip": "8.8.8.8",
+            "proxy_ip": "8.8.8.8",
+            "sni_domain": "sni.example.com",
+        },
+    )
+    integration = Integration(
+        id="atlas-test",
+        kind="ripe_atlas",
+        name="Atlas",
+        ciphertext="not-used",
+        metadata_json={},
+    )
+    db.add_all([a, integration])
+    db.commit()
+    text, _ = dispatch_action(db, 1, action(db, 1, "x", "prepare_sni", a.id))
+    db.commit()
+    assert "кредиты" in text and db.scalar(select(ControlTask)) is None
+    assert proxy_address(a) == "8.8.8.8"
+    text, _ = dispatch_action(
+        db, 1, action(db, 1, "x", "confirm_sni", a.id + ":atlas-test")
+    )
+    db.commit()
+    task = db.scalar(select(ControlTask))
+    assert task.kind == "sni" and task.payload["target_ip"] == "8.8.8.8"
+    assert request_sni_check(db, a.id, "atlas-test", "web").id == task.id
+    assert db.scalar(select(FloatingIP)) is None
+    a.configuration = {**a.configuration, "floating_ip": "1.1.1.1"}
+    assert proxy_address(a) == "1.1.1.1"

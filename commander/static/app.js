@@ -27,6 +27,11 @@ const pages = {
   settings: ["⚙", "Настройки", "Безопасность и готовность Commander"],
 };
 const statuses = {
+  active: "Работает",
+  inactive: "Остановлен",
+  available: "Доступен",
+  unavailable: "Недоступен",
+  partial: "Частично доступен",
   reachable: "Доступен TCP",
   suspected: "Вероятная недоступность",
   unknown: "Неопределённо",
@@ -361,8 +366,10 @@ async function agentsPage(root, compact = false) {
         a.revoked ? "Доступ отозван" : a.online ? "На связи" : "Нет связи",
         "badge " + (a.online ? "online" : "offline"),
       ),
-      kv("Telemt", a.facts.telemt_service),
+      kv("Telemt", title(a.facts.telemt_service)),
       kv("Floating IP", a.configuration.floating_ip),
+      kv("DNS-запись", a.configuration.dns_record),
+      kv("Исходный IP прокси", a.configuration.proxy_ip),
       kv("Автоматизация", a.paused ? "Пауза" : "Ручной режим"),
       button("Открыть агента", () => agentDetails(a)),
     );
@@ -386,6 +393,8 @@ async function agentDetails(a) {
     kv("Домен", a.public_host),
     kv("Management IP", a.configuration.management_ip),
     kv("Floating IP", a.configuration.floating_ip),
+    kv("DNS-запись", a.configuration.dns_record),
+    kv("Исходный IP прокси", a.configuration.proxy_ip),
     kv("ОС", a.facts.os),
     kv("Telemt", a.facts.telemt_version),
     kv(
@@ -494,6 +503,7 @@ async function editAgent(a) {
     ["region", "Регион"],
     ["sni_domain", "SNI-домен Telemt"],
     ["management_ip", "Постоянный Management IPv4"],
+    ["proxy_ip", "Исходный IPv4 прокси (до покупки Floating IP)"],
     ["floating_ip", "Клиентский Floating IPv4"],
     ["cherry_integration_id", "Интеграция Cherry"],
     ["cherry_project_id", "Cherry Project ID"],
@@ -606,6 +616,25 @@ async function recovery(a) {
   }, "Выполнить предпроверку");
 }
 async function monitoring(root) {
+  const coverage = panel("RIPE Atlas: покрытие проверок");
+  const details = el("div");
+  coverage.body.append(
+    el(
+      "p",
+      "Москва, Санкт-Петербург, Красноярск, Хабаровск; Мегафон, Билайн, МТС, Ростелеком. Контроль: Германия, Нидерланды, Финляндия. География зондов приблизительная; наличие зондов проверяется перед запуском.",
+      "note",
+    ),
+    button("Показать актуальное покрытие", async () => {
+      details.replaceChildren(el("p", "Загружаем список зондов…"));
+      try {
+        renderAtlasCoverage(details, await api("/api/atlas/probe-plan"));
+      } catch (error) {
+        details.replaceChildren(el("p", error.message, "warn"));
+      }
+    }),
+    details,
+  );
+  root.append(coverage.box);
   for (const a of state.agents) {
     const p = panel(a.name + " · " + (a.public_host || "домен не определён"));
     p.body.append(button("Новая проверка из РФ", () => queueCheck(a.id)));
@@ -623,6 +652,15 @@ async function monitoring(root) {
             "div",
             `${o.source} · ${o.country} · ${o.asn || "ASN неизвестен"} · ${o.target || ""} → ${title(o.state)}`,
             "mono",
+          ),
+        );
+      if (c.details.comparison)
+        item.append(el("p", atlasComparison(c.details.comparison), "note"));
+      for (const region of c.details.regions || [])
+        item.append(
+          el(
+            "div",
+            `${region.country} · ${region.city || region.name || ""} · ${region.provider || ""}: ${title(region.outcome)} (${region.successes}/${region.responded})`,
           ),
         );
       list.append(item);
@@ -1015,7 +1053,7 @@ async function sniDialog(a) {
   );
   modal(
     "RIPE Atlas: SNI-домен",
-    "Измерение использует кредиты вашего RIPE Atlas аккаунта. Проверяется TLS домена из РФ; это не проверка MTProto и не основание покупать новый IP.",
+    "Измерение использует кредиты RIPE Atlas. Один IPv4 прокси с заданным SNI проверяется из РФ, Германии, Нидерландов и Финляндии. Это диагностика TLS, не проверка MTProto и не команда покупки IP.",
   );
   if (!integrations.length) {
     $("dialogBody").append(
@@ -1032,7 +1070,16 @@ async function sniDialog(a) {
   }
   $("dialogBody").append(
     kv("SNI-домен", a.configuration.sni_domain || a.facts.tls_domain),
+    kv(
+      "IPv4 для всех стран",
+      a.configuration.floating_ip || a.configuration.proxy_ip || "Не указан",
+    ),
     select,
+    button("Показать актуальное покрытие", async () => {
+      const details = el("div");
+      $("dialogBody").append(details);
+      renderAtlasCoverage(details, await api("/api/atlas/probe-plan"));
+    }),
   );
   saveButton(async () => {
     const task = await write("/api/agents/" + a.id + "/sni-check", {
@@ -1042,4 +1089,39 @@ async function sniDialog(a) {
     toast("Измерение поставлено в очередь: " + task.status);
     closeModal();
   }, "Подтвердить расход кредитов и проверить");
+}
+
+function atlasComparison(value) {
+  return (
+    {
+      suspected_ru_filtering:
+        "Возможна фильтрация в РФ: зарубежный контроль доступен. Нужны повторные независимые проверки.",
+      ru_accessible: "SNI доступен на выбранных российских зондах.",
+      inconclusive:
+        "Недостаточно согласованных данных для вывода о фильтрации в РФ.",
+    }[value] || value
+  );
+}
+function renderAtlasCoverage(root, plan) {
+  root.replaceChildren(
+    el(
+      "p",
+      `Выбрано зондов: ${plan.probes.length}. Радиус поиска около города: ${plan.radius_km} км.`,
+    ),
+  );
+  const table = el("table");
+  const head = el("tr");
+  for (const name of ["Страна / город", "Провайдер", "Зондов"])
+    head.append(el("th", name));
+  table.append(head);
+  for (const group of plan.coverage) {
+    const row = el("tr");
+    row.append(
+      el("td", group.city || group.name || group.country),
+      el("td", group.provider || "Разные ASN"),
+      el("td", group.probes ? String(group.probes) : "Нет доступных"),
+    );
+    table.append(row);
+  }
+  root.append(table, el("p", plan.note, "note"));
 }

@@ -1,6 +1,7 @@
 import json
 import re
 import secrets
+import httpx
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -813,39 +814,9 @@ def check_sni(
     actor=Depends(admin),
     db: Session = Depends(get_db),
 ):
-    from .monitor import PUBLIC_HOST
+    from .services import request_sni_check
 
-    agent = require_agent(db, agent_id, lock=True)
-    integration = db.get(Integration, body.integration_id)
-    host = (
-        (agent.configuration or {}).get("sni_domain")
-        or agent.facts.get("tls_domain")
-        or ""
-    )
-    if (
-        not integration
-        or integration.kind != "ripe_atlas"
-        or not PUBLIC_HOST.fullmatch(host)
-    ):
-        raise HTTPException(422, "Выберите RIPE Atlas интеграцию и SNI-домен агента")
-    existing = db.scalar(
-        select(ControlTask).where(
-            ControlTask.agent_id == agent_id,
-            ControlTask.kind == "sni",
-            ControlTask.status.in_(["queued", "running", "submission_uncertain"]),
-        )
-    )
-    if existing:
-        return {"task_id": existing.id, "status": existing.status}
-    task = ControlTask(
-        agent_id=agent_id,
-        kind="sni",
-        dedup_key="sni:" + str(uuid4()),
-        payload={"integration_id": integration.id, "host": host},
-    )
-    db.add(task)
-    db.flush()
-    audit(db, actor, "sni_check_credits_approved", task.id)
+    task = request_sni_check(db, agent_id, body.integration_id, actor)
     db.commit()
     return {"task_id": task.id, "status": task.status}
 
@@ -866,3 +837,15 @@ async def dns_domains(
         )
     except (DynadotError, ValueError):
         raise HTTPException(502, "Не удалось получить список доменов Dynadot") from None
+
+
+@app.get("/api/atlas/probe-plan")
+async def atlas_probe_plan(actor=Depends(admin)):
+    from .atlas_probes import discover_probes
+
+    try:
+        return await discover_probes()
+    except (httpx.HTTPError, ValueError):
+        raise HTTPException(
+            502, "Не удалось получить актуальное покрытие RIPE Atlas"
+        ) from None
