@@ -136,8 +136,10 @@ def test_stored_pending_credentials_do_not_reprompt_or_create_duplicate(
             return authorized[0]
 
         async def send_code_request(self, phone):
+            from telethon.tl.types.auth import SentCode, SentCodeTypeApp
+
             sent.append(phone)
-            return SimpleNamespace(phone_code_hash="transient-hash")
+            return SentCode(SentCodeTypeApp(5), "transient-hash")
 
         async def sign_in(self, *args, **kwargs):
             if needs_2fa and "password" not in kwargs:
@@ -243,3 +245,103 @@ def test_sponsor_pending_account_stops_before_dialog_or_state_write(
     with pytest.raises(ManualRequired, match="ещё не авторизован"):
         asyncio.run(sponsorship.sponsor_agent("one", approve_new_registration=True))
     assert db.query(Sponsorship).count() == 0
+
+
+def test_login_delivery_and_resend_respect_telegram_delay(monkeypatch, capsys):
+    from commander import sponsorship
+    from telethon.tl.types.auth import (
+        SentCode,
+        SentCodeTypeApp,
+        SentCodeTypeSms,
+        CodeTypeSms,
+    )
+
+    clock = [0.0]
+    answers = iter(["", "", "54321"])
+    requests = []
+    initial = SentCode(
+        SentCodeTypeApp(5), "first-private-hash", next_type=CodeTypeSms(), timeout=30
+    )
+    replacement = SentCode(SentCodeTypeSms(5), "replacement-private-hash")
+
+    def hidden(_):
+        value = next(answers)
+        if len(requests) == 0 and clock[0] == 0:
+            clock[0] = 10
+        else:
+            clock[0] = 31
+        return value
+
+    class Client:
+        async def __call__(self, request):
+            assert clock[0] >= 30
+            requests.append(request)
+            return replacement
+
+    monkeypatch.setattr("getpass.getpass", hidden)
+    monkeypatch.setattr(sponsorship.time, "monotonic", lambda: clock[0])
+    result = asyncio.run(sponsorship.read_login_code(Client(), "+15551234567", initial))
+    assert result == ("54321", "replacement-private-hash")
+    assert len(requests) == 1 and requests[0].phone_code_hash == "first-private-hash"
+    output = capsys.readouterr().out
+    assert (
+        "служебный чат Telegram" in output and "SMS" in output and "20 сек." in output
+    )
+    assert all(
+        value not in output
+        for value in (
+            "54321",
+            "first-private-hash",
+            "replacement-private-hash",
+            "+15551234567",
+        )
+    )
+
+
+def test_login_never_resends_when_not_offered_or_already_resent(monkeypatch):
+    from commander.sponsorship import read_login_code
+    from telethon.tl.types.auth import SentCode, SentCodeTypeApp, CodeTypeSms
+
+    monkeypatch.setattr("getpass.getpass", lambda _: "")
+    requests = []
+
+    class Client:
+        async def __call__(self, request):
+            requests.append(request)
+            return SentCode(
+                SentCodeTypeApp(5), "new", next_type=CodeTypeSms(), timeout=0
+            )
+
+    with pytest.raises(ManualRequired, match="отменён"):
+        asyncio.run(
+            read_login_code(
+                Client(), "+15551234567", SentCode(SentCodeTypeApp(5), "old")
+            )
+        )
+    assert not requests
+    with pytest.raises(ManualRequired, match="отменён"):
+        asyncio.run(
+            read_login_code(
+                Client(),
+                "+15551234567",
+                SentCode(SentCodeTypeApp(5), "old", next_type=CodeTypeSms(), timeout=0),
+            )
+        )
+    assert len(requests) == 1
+
+
+def test_login_unknown_delivery_does_not_prompt_or_dump_response(monkeypatch):
+    from commander.sponsorship import read_login_code
+
+    def no_prompt(_):
+        pytest.fail("Unsupported delivery must not request a code")
+
+    monkeypatch.setattr("getpass.getpass", no_prompt)
+    with pytest.raises(ManualRequired, match="не поддерживает"):
+        asyncio.run(
+            read_login_code(
+                None,
+                "private-phone",
+                SimpleNamespace(type=object(), phone_code_hash="private-hash"),
+            )
+        )

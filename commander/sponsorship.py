@@ -7,6 +7,7 @@ bot interface is unverified; any unexpected message stops the conversation.
 import asyncio
 import hashlib
 import re
+import time
 from contextlib import contextmanager
 
 from sqlalchemy import text
@@ -30,6 +31,60 @@ from .vault import decrypt, encrypt
 
 class ManualRequired(RuntimeError):
     pass
+
+
+def login_delivery(sent):
+    """Describe only the delivery type; never print the auth response or hash."""
+    descriptions = {
+        "SentCodeTypeApp": "в служебный чат Telegram на уже авторизованных устройствах этого аккаунта",
+        "SentCodeTypeSms": "по SMS на сохранённый номер",
+        "SentCodeTypeCall": "голосовым звонком на сохранённый номер",
+        "SentCodeTypeEmailCode": "на почту для входа, настроенную в Telegram",
+        "SentCodeTypeSmsWord": "словом в SMS на сохранённый номер",
+        "SentCodeTypeSmsPhrase": "фразой в SMS на сохранённый номер",
+    }
+    delivery = descriptions.get(type(getattr(sent, "type", None)).__name__)
+    if not delivery:
+        raise ManualRequired(
+            "Telegram вернул способ входа, который эта команда не поддерживает. "
+            "Проверьте вход в официальном приложении; частые повторные запросы не помогут."
+        )
+    return delivery
+
+
+async def read_login_code(client, phone, sent):
+    import getpass
+    from telethon.tl.functions.auth import ResendCodeRequest
+
+    deadline = time.monotonic() + max(0, getattr(sent, "timeout", 0) or 0)
+    resent = False
+    while True:
+        print("Telegram указал доставку кода: " + login_delivery(sent) + ".")
+        can_resend = getattr(sent, "next_type", None) is not None and not resent
+        if can_resend:
+            print(
+                "Если кода нет, нажмите Enter без кода для одного повторного запроса. "
+                "Команда проверит задержку Telegram; способ повторной доставки выбирает Telegram."
+            )
+        else:
+            print("Повторная отправка сейчас недоступна. Пустой ввод отменяет вход.")
+        value = getpass.getpass("Код Telegram (скрытый ввод): ").strip()
+        if value:
+            return value, sent.phone_code_hash
+        if not can_resend:
+            raise ManualRequired(
+                "Вход отменён: код не получен. Данные интеграции сохранены."
+            )
+        remaining = max(0, int(deadline - time.monotonic() + 0.999))
+        if remaining:
+            print(
+                f"Повторный запрос разрешён через {remaining} сек. Подождите и снова нажмите Enter."
+            )
+            continue
+        sent = await asyncio.wait_for(
+            client(ResendCodeRequest(phone, sent.phone_code_hash)), timeout=30
+        )
+        resent = True
 
 
 def parse_tag(message, secret):
@@ -206,11 +261,12 @@ async def authorize_local(name="Telegram account", integration_id=None):
                 print(
                     "Telegram запросил подтверждение входа. Код и пароль вводите только здесь; ввод скрыт."
                 )
+                value, phone_code_hash = await read_login_code(client, phone, code)
                 try:
                     await client.sign_in(
                         phone,
-                        getpass.getpass("Код Telegram (скрытый ввод): "),
-                        phone_code_hash=code.phone_code_hash,
+                        value,
+                        phone_code_hash=phone_code_hash,
                     )
                 except SessionPasswordNeededError:
                     await client.sign_in(
@@ -230,11 +286,17 @@ async def authorize_local(name="Telegram account", integration_id=None):
                 integration_id,
             )
             return integration_id
-        except (Exception, KeyboardInterrupt):
+        except (Exception, KeyboardInterrupt) as error:
             with SessionLocal() as db:
                 item = db.get(Integration, integration_id)
                 item.status = "authorization_required"
                 db.commit()
+            if isinstance(error, ManualRequired):
+                raise
+            if isinstance(error, FloodWaitError):
+                raise ManualRequired(
+                    f"Telegram ограничил попытки входа. Повторите не раньше чем через {error.seconds} сек."
+                ) from None
             raise ManualRequired(
                 "Вход не завершён. Данные сохранены; повторите локальную авторизацию. Код и пароль в чат не отправляйте"
             ) from None
