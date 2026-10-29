@@ -24,6 +24,7 @@ def main():
     telethon = sub.add_parser("telethon-login")
     telethon.add_argument("name", nargs="?", default="Telegram account")
     telethon.add_argument("--integration-id")
+    telethon.add_argument("--qr", action="store_true", help="Вход по QR вместо кода")
     sponsor = sub.add_parser("sponsor-agent")
     sponsor.add_argument("agent_id")
     sponsor.add_argument("--approve-new-registration", action="store_true")
@@ -46,9 +47,14 @@ def main():
     args = parser.parse_args()
     if args.command == "telethon-login":
         import asyncio
+        import os
         from .sponsorship import authorize_local
 
-        asyncio.run(authorize_local(args.name, args.integration_id))
+        if args.qr and os.environ.get("AUTOIP_PRIVATE_LOGIN_TERMINAL") != "true":
+            raise SystemExit(
+                "Для QR используйте сервис telegram-login с отключённым журналированием."
+            )
+        asyncio.run(authorize_local(args.name, args.integration_id, qr=args.qr))
     elif args.command == "sponsor-agent":
         import asyncio
         from .sponsorship import sponsor_agent

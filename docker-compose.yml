@@ -80,6 +80,21 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+  telegram-login:
+    <<: *application
+    environment:
+      <<: *environment
+      AUTOIP_PRIVATE_LOGIN_TERMINAL: 'true'
+    profiles: [setup]
+    command: [python, -m, commander.manage, telethon-login]
+    restart: 'no'
+    stdin_open: true
+    tty: true
+    logging:
+      driver: none
+    depends_on:
+      db:
+        condition: service_healthy
 volumes:
   postgres_data:
 networks:

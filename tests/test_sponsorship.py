@@ -93,8 +93,11 @@ def test_registration_flow_checkpoints_tag_without_persisting_secret():
 
 
 @pytest.mark.parametrize("needs_2fa", [False, True])
+@pytest.mark.parametrize(
+    "qr,wrong_account", [(False, False), (True, False), (True, True)]
+)
 def test_stored_pending_credentials_do_not_reprompt_or_create_duplicate(
-    db, monkeypatch, tmp_path, needs_2fa
+    db, monkeypatch, tmp_path, needs_2fa, qr, wrong_account
 ):
     from contextlib import nullcontext
     from types import SimpleNamespace
@@ -121,6 +124,7 @@ def test_stored_pending_credentials_do_not_reprompt_or_create_duplicate(
     prompts = []
     sent = []
     authorized = [False]
+    logged_out = []
 
     class Client:
         def __init__(self, *args):
@@ -148,6 +152,22 @@ def test_stored_pending_credentials_do_not_reprompt_or_create_duplicate(
                 raise SessionPasswordNeededError(request=None)
             authorized[0] = True
 
+        async def get_me(self):
+            return SimpleNamespace(
+                phone="15550000000" if wrong_account else "15551234567"
+            )
+
+        async def log_out(self):
+            logged_out.append(True)
+            authorized[0] = False
+
+    async def scan(client):
+        if needs_2fa:
+            from telethon.errors import SessionPasswordNeededError
+
+            raise SessionPasswordNeededError(request=None)
+        authorized[0] = True
+
     def hidden(prompt):
         prompts.append(prompt)
         return "12345"
@@ -157,16 +177,33 @@ def test_stored_pending_credentials_do_not_reprompt_or_create_duplicate(
     )
     monkeypatch.setattr(sponsorship, "TelegramClient", Client)
     monkeypatch.setattr(sponsorship, "account_lock", lambda _: nullcontext())
+    monkeypatch.setattr(sponsorship, "authorize_qr", scan)
     monkeypatch.setattr("getpass.getpass", hidden)
     monkeypatch.setattr("sys.stdin", SimpleNamespace(isatty=lambda: True))
-    result = asyncio.run(sponsorship.authorize_local(integration_id="pending-account"))
+    if wrong_account:
+        with pytest.raises(ManualRequired, match="другим аккаунтом"):
+            asyncio.run(
+                sponsorship.authorize_local(integration_id="pending-account", qr=qr)
+            )
+        db.expire_all()
+        stored = db.get(Integration, "pending-account")
+        assert stored.status == "authorization_required"
+        assert decrypt(stored) == credentials
+        assert logged_out == [True]
+        assert sent == []
+        return
+    result = asyncio.run(
+        sponsorship.authorize_local(integration_id="pending-account", qr=qr)
+    )
     db.expire_all()
     stored = db.get(Integration, "pending-account")
     assert result == "pending-account" and stored.status == "verified"
-    assert len(prompts) == 1 + int(needs_2fa) and "Код Telegram" in prompts[0]
+    assert len(prompts) == int(not qr) + int(needs_2fa)
+    if not qr:
+        assert "Код Telegram" in prompts[0]
     if needs_2fa:
-        assert "Пароль 2FA" in prompts[1]
-    assert sent == ["+15551234567"]
+        assert "Пароль 2FA" in prompts[-1]
+    assert sent == ([] if qr else ["+15551234567"])
     assert decrypt(stored)["session"] == "fake-encrypted-session-input"
     assert db.query(Integration).count() == 1
 
@@ -345,3 +382,30 @@ def test_login_unknown_delivery_does_not_prompt_or_dump_response(monkeypatch):
                 SimpleNamespace(type=object(), phone_code_hash="private-hash"),
             )
         )
+
+
+def test_qr_timeout_is_bounded_and_does_not_print_login_url(monkeypatch, capsys):
+    import qrcode
+    from commander.sponsorship import authorize_qr
+
+    printed = []
+    monkeypatch.setattr("builtins.input", lambda _: "")
+
+    class QR:
+        url = "tg://login?token=private-one-time-token"
+
+        async def wait(self, timeout):
+            assert timeout == 60
+            raise asyncio.TimeoutError
+
+    class Client:
+        async def qr_login(self):
+            return QR()
+
+    monkeypatch.setattr(
+        qrcode.QRCode, "print_ascii", lambda self, **kwargs: printed.append(True)
+    )
+    with pytest.raises(ManualRequired, match="QR истёк"):
+        asyncio.run(authorize_qr(Client()))
+    assert printed == [True]
+    assert "private-one-time-token" not in capsys.readouterr().out

@@ -194,7 +194,32 @@ def account_lock(identifier):
             )
 
 
-async def authorize_local(name="Telegram account", integration_id=None):
+async def authorize_qr(client):
+    import sys
+    import qrcode
+
+    print("На телефоне: Telegram → Настройки → Устройства → Подключить устройство.")
+    print("Сканируйте QR только своим аккаунтом. QR и ссылки входа не пересылайте.")
+    input("Подготовьте сканер на телефоне и нажмите Enter для показа QR: ")
+    login = await asyncio.wait_for(client.qr_login(), timeout=30)
+    # Listen before displaying: scanning may complete immediately.
+    waiter = asyncio.create_task(login.wait(timeout=60))
+    try:
+        await asyncio.sleep(0)
+        image = qrcode.QRCode(border=4)
+        image.add_data(login.url)
+        image.make(fit=True)
+        image.print_ascii(out=sys.stdout, invert=True)
+        await waiter
+    except asyncio.TimeoutError:
+        raise ManualRequired("QR истёк. Запустите вход через QR ещё раз.") from None
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+
+async def authorize_local(name="Telegram account", integration_id=None, qr=False):
     """Use stored credentials; codes and 2FA passwords are read only from local TTY."""
     import getpass
     import sys
@@ -250,28 +275,43 @@ async def authorize_local(name="Telegram account", integration_id=None):
             )
             await asyncio.wait_for(client.connect(), timeout=30)
             if not await asyncio.wait_for(client.is_user_authorized(), timeout=30):
-                phone = credentials.get("phone")
-                if not phone:
-                    raise ManualRequired(
-                        "Для повторной авторизации укажите телефон в защищённой интеграции"
-                    )
-                code = await asyncio.wait_for(
-                    client.send_code_request(phone), timeout=30
-                )
-                print(
-                    "Telegram запросил подтверждение входа. Код и пароль вводите только здесь; ввод скрыт."
-                )
-                value, phone_code_hash = await read_login_code(client, phone, code)
                 try:
-                    await client.sign_in(
-                        phone,
-                        value,
-                        phone_code_hash=phone_code_hash,
-                    )
+                    if qr:
+                        await authorize_qr(client)
+                    else:
+                        phone = credentials.get("phone")
+                        if not phone:
+                            raise ManualRequired(
+                                "Для повторной авторизации укажите телефон в защищённой интеграции"
+                            )
+                        code = await asyncio.wait_for(
+                            client.send_code_request(phone), timeout=30
+                        )
+                        print(
+                            "Telegram запросил подтверждение входа. Код и пароль вводите только здесь; ввод скрыт."
+                        )
+                        value, phone_code_hash = await read_login_code(
+                            client, phone, code
+                        )
+                        await client.sign_in(
+                            phone, value, phone_code_hash=phone_code_hash
+                        )
                 except SessionPasswordNeededError:
                     await client.sign_in(
                         password=getpass.getpass("Пароль 2FA Telegram (скрытый ввод): ")
                     )
+                if qr:
+                    me = await asyncio.wait_for(client.get_me(), timeout=30)
+                    expected_phone = credentials.get("phone", "").lstrip("+")
+                    if (
+                        not expected_phone
+                        or getattr(me, "phone", None) != expected_phone
+                    ):
+                        await asyncio.wait_for(client.log_out(), timeout=30)
+                        raise ManualRequired(
+                            "QR подтверждён другим аккаунтом. Новая сессия закрыта; "
+                            "выберите в Telegram аккаунт с сохранённым номером."
+                        )
             if not await client.is_user_authorized():
                 raise ManualRequired("Авторизация Telegram не завершена")
             credentials = {**credentials, "session": client.session.save()}

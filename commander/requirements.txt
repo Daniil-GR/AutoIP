@@ -10,3 +10,4 @@ aiogram==3.26.0
 Telethon==1.42.0
 dnspython==2.8.0
 pyotp==2.9.0
+qrcode==8.2
