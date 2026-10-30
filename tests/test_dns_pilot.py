@@ -163,6 +163,7 @@ def test_interrupted_append_restores_without_second_add(provider):
 def test_restore_never_replays_old_zone_over_concurrent_changes(provider):
     before = fixture_zone()
     provider["zone"]["dns_sub_list"][1]["record_value1"] = "changed-by-owner"
+    provider["zone"]["dns_sub_list"][0]["record_value1"] = NEW
     with pytest.raises(DNSPilotError):
         asyncio.run(
             DNSPilot("key", "secret").restore_a(
@@ -302,3 +303,28 @@ def test_dns_quorum_accepts_majority_without_claiming_every_authority_updated():
     ] * 2
     assert not dns_quorum(rows, NEW)["authoritative_ok"]
     assert not dns_quorum({"authoritative": [], "recursive": []}, NEW)["recursive_ok"]
+
+
+def test_noop_restore_preserves_new_unrelated_record(provider):
+    before = fixture_zone()
+    extra = {"sub_host": "other", "record_type": "a", "record_value1": "9.9.9.9"}
+    provider["zone"]["dns_sub_list"].append(extra)
+    report = asyncio.run(
+        DNSPilot("key", "secret").restore_a(
+            "lt.vetka.rest", OLD, NEW, before, approved=True, allow_mutation=False
+        )
+    )
+    assert report["already_original"] and report["other_records_changed"]
+    assert provider["calls"] == [] and extra in provider["zone"]["dns_sub_list"]
+
+
+def test_completed_pilot_cannot_reuse_old_approval_for_a_new_restore(provider):
+    before = fixture_zone()
+    provider["zone"]["dns_sub_list"][0]["record_value1"] = NEW
+    with pytest.raises(DNSPilotError):
+        asyncio.run(
+            DNSPilot("key", "secret").restore_a(
+                "lt.vetka.rest", OLD, NEW, before, approved=True, allow_mutation=False
+            )
+        )
+    assert provider["calls"] == []

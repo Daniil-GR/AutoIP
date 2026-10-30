@@ -167,8 +167,10 @@ async def change(operation_id, *, restore=False):
                 state["before"],
                 approved=True,
                 checkpoint=cb,
+                allow_mutation=state["stage"] != "COMPLETED_RETURNED",
             )
-            checkpoint(operation_id, "RESTORED_PROVIDER")
+            if state["stage"] != "COMPLETED_RETURNED":
+                checkpoint(operation_id, "RESTORED_PROVIDER")
         else:
             if state["stage"] != "PREPARED":
                 raise DNSPilotError(

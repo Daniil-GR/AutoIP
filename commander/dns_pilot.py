@@ -70,7 +70,15 @@ def assert_records(actual, expected):
 
 class DNSPilot(Dynadot):
     async def restore_a(
-        self, host, old, new, before, *, approved=False, checkpoint=None
+        self,
+        host,
+        old,
+        new,
+        before,
+        *,
+        approved=False,
+        checkpoint=None,
+        allow_mutation=True,
     ):
         """Reconcile an interrupted pilot, preserving unrelated records on restore."""
         if not approved:
@@ -90,11 +98,23 @@ class DNSPilot(Dynadot):
                 ],
             }
 
-        # Compare every other record with the original snapshot. Never restore a
-        # whole old zone over somebody else's concurrent changes.
-        assert_records(without_target(current), without_target(before))
         if canonical(matches) == canonical([original]):
-            return {"restored": True, "already_original": True}
+            try:
+                assert_records(without_target(current), without_target(before))
+                changed = False
+            except DNSPilotError:
+                changed = True
+            return {
+                "restored": True,
+                "already_original": True,
+                "other_records_changed": changed,
+            }
+        if not allow_mutation:
+            raise DNSPilotError(
+                "Пилот завершён; новое изменение DNS требует нового согласования"
+            )
+        # Only a real mutation needs the strict original-zone comparison.
+        assert_records(without_target(current), without_target(before))
         if canonical(matches) == canonical([candidate]):
             return await self.replace_a(
                 host, new, old, approved=True, checkpoint=checkpoint
