@@ -18,8 +18,8 @@ class DynadotError(RuntimeError):
         super().__init__("Dynadot API отклонил запрос или недоступен")
 
 
-def signature(api_key, api_secret, path_and_query, request_id):
-    message = f"{api_key}\n{path_and_query}\n{request_id}\n"
+def signature(api_key, api_secret, path_and_query, request_id, body=""):
+    message = f"{api_key}\n{path_and_query}\n{request_id}\n{body}"
     digest = hmac.new(api_secret.encode(), message.encode(), hashlib.sha256).digest()
     return base64.b64encode(digest).decode()
 

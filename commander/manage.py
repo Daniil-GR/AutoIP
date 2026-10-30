@@ -40,6 +40,15 @@ def main():
         action="store_true",
         help="Явное разрешение одного заказа или Attach",
     )
+    dns_pilot = sub.add_parser("dns-pilot", help="Согласованный DNS-тест с возвратом")
+    dns_pilot.add_argument(
+        "action",
+        choices=["prepare", "switch", "restore", "verify", "verify-return", "status"],
+    )
+    dns_pilot.add_argument("--operation-id", required=True)
+    dns_pilot.add_argument("--agent-id")
+    dns_pilot.add_argument("--resource-id")
+    dns_pilot.add_argument("--approved", action="store_true")
     bootstrap = sub.add_parser("import-bootstrap")
     bootstrap.add_argument("path")
     key = sub.add_parser("vault-init")
@@ -58,7 +67,59 @@ def main():
         ],
     )
     args = parser.parse_args()
-    if args.command == "floating-ip-pilot":
+    if args.command == "dns-pilot":
+        import asyncio
+        import json
+        from .dns_roundtrip import prepare, change, verify, load
+        from .dns_pilot import DNSPilotError
+        from .diagnostics import record_failure
+
+        try:
+            if args.action == "prepare":
+                result = asyncio.run(
+                    prepare(
+                        args.operation_id,
+                        args.agent_id,
+                        args.resource_id,
+                        approved=args.approved,
+                    )
+                )
+            elif args.action in ("switch", "restore"):
+                result = asyncio.run(
+                    change(args.operation_id, restore=args.action == "restore")
+                )
+            elif args.action in ("verify", "verify-return"):
+                result = asyncio.run(
+                    verify(args.operation_id, restored=args.action == "verify-return")
+                )
+            else:
+                state = load(args.operation_id)
+                result = {
+                    k: state.get(k)
+                    for k in (
+                        "stage",
+                        "host",
+                        "old",
+                        "new",
+                        "ttl",
+                        "forward_check",
+                        "return_check",
+                    )
+                }
+            print(json.dumps(result, ensure_ascii=False))
+            if args.action in ("verify", "verify-return") and not result.get(
+                "verified"
+            ):
+                raise SystemExit(2)  # Not yet ready; never report shell success.
+        except Exception as error:
+            error_id = record_failure(
+                "dns_pilot", args.action, error, operation_id=args.operation_id
+            )
+            message = (
+                str(error) if isinstance(error, DNSPilotError) else "Ошибка DNS-пилота"
+            )
+            raise SystemExit(f"{message}; error_id={error_id}") from None
+    elif args.command == "floating-ip-pilot":
         import asyncio
         import json
         from .floating_pilot import PilotError, purchase_one, attach_one, operation_key
