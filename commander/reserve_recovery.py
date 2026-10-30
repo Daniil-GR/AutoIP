@@ -249,8 +249,48 @@ async def verify_assignment(state):
         raise DNSPilotError("Cherry не подтвердил назначение резерва нужной ноде")
 
 
-def queue_if_ready(db, recovery, incident):
+def recovery_failure(evidence, decision):
+    """Human confirmation supports protocol blocks invisible to TCP probes."""
     from .monitor import independent_failure
+
+    if independent_failure(evidence):
+        return True
+    if decision != "confirm" or not evidence.get("ip"):
+        return False
+    for report in evidence.get("reports", []):
+        if (
+            report.get("source") != "mtproto-checker"
+            or report.get("status") != "observed"
+            or report.get("target") != evidence["ip"]
+            or report.get("provider_status") not in ("RKN_BLOCK", "DATA_CUT")
+        ):
+            continue
+        try:
+            checked = datetime.fromisoformat(
+                report["checked_at"].replace("Z", "+00:00")
+            )
+            if (
+                checked.tzinfo is None
+                or not -60 <= (utcnow() - checked).total_seconds() <= 300
+            ):
+                continue
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+        points = report.get("points", {})
+        local, remote = points.get("local", {}), points.get("remote", {})
+        if not all(remote.get(k) is True for k in ("tcp", "handshake", "data")):
+            continue
+        if report["provider_status"] == "RKN_BLOCK":
+            return local.get("tcp") is False or local.get("handshake") is False
+        return (
+            local.get("tcp") is True
+            and local.get("handshake") is True
+            and local.get("data") is False
+        )
+    return False
+
+
+def queue_if_ready(db, recovery, incident):
     from .services import proxy_address
 
     agent = db.get(Agent, recovery.agent_id)
@@ -261,7 +301,7 @@ def queue_if_ready(db, recovery, incident):
         and incident
         and incident.status == "BLOCK_CONFIRMED"
         and incident.observed_ip == proxy_address(agent)
-        and independent_failure(incident.evidence)
+        and recovery_failure(incident.evidence, incident.decision)
     ):
         return False
     other = db.scalar(
@@ -409,7 +449,7 @@ def exclusive():
 
 async def step(identifier):
     from .services import online, proxy_address
-    from .monitor import independent_failure, verdict
+    from .monitor import verdict
     from .monitoring import checker_report, collect_agent
 
     s = load(identifier)
@@ -481,11 +521,11 @@ async def step(identifier):
         if result == "reachable":
             finish(identifier, "CANCELLED", "Доступность исходного IP восстановилась")
             return
-        if result != "suspected" or not independent_failure(evidence):
+        if result != "suspected" or not recovery_failure(evidence, i.decision):
             finish(
                 identifier,
                 "MANUAL_REQUIRED",
-                "Финальная проверка не подтверждает независимую блокировку",
+                "Финальная проверка не дала достаточных подтверждений блокировки",
             )
             return
         save(identifier, "CANDIDATE_CHECK", final_evidence=evidence)
@@ -764,5 +804,5 @@ STAGE_LABELS = {
     "queued": "В очереди",
     "running": "Выполняется",
     "checked": "Проверено",
-    "blocked": "Выключено",
+    "blocked": "Остановлено",
 }

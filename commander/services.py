@@ -134,7 +134,7 @@ def recovery_plan(db, agent_id, actor, key, incident_id=None):
         {
             "stage": "LIVE_EXECUTION",
             "status": "blocked",
-            "reason": "Исполнение не включено либо нет достаточного подтверждения инцидента",
+            "reason": "Нет достаточных подтверждений блокировки либо не выполнены условия восстановления",
         },
     ]
     recovery = Recovery(

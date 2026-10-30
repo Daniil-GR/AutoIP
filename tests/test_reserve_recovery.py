@@ -554,3 +554,74 @@ def test_telemt_public_host_can_be_primary_ip_while_clients_use_dns(db, env):
         assert session.get(Recovery, r.id).status == "SUCCEEDED"
         assert session.get(Agent, a.id).public_host == OLD
     assert p.calls == [("POST", NEW), ("DELETE", OLD)]
+
+
+def human_protocol_evidence(status="RKN_BLOCK"):
+    return {
+        "ip": OLD,
+        "reports": [
+            {
+                "source": "mtproto-checker",
+                "status": "observed",
+                "target": OLD,
+                "provider_status": status,
+                "checked_at": utcnow().isoformat(),
+                "points": {
+                    "local": {"tcp": False, "handshake": False, "data": False},
+                    "remote": {"tcp": True, "handshake": True, "data": True},
+                },
+            }
+        ],
+        "observations": [],
+    }
+
+
+def test_human_confirmation_accepts_fresh_protocol_block_only():
+    data = human_protocol_evidence()
+    assert rr.recovery_failure(data, "confirm")
+    assert not rr.recovery_failure(data, "auto_confirm")
+    assert not rr.recovery_failure(data, "")
+    data["reports"][0]["target"] = NEW
+    assert not rr.recovery_failure(data, "confirm")
+
+
+@pytest.mark.parametrize(
+    "change", ["stale", "external_dead", "unknown", "missing_time"]
+)
+def test_human_confirmation_cannot_bypass_protocol_proof(change):
+    data = human_protocol_evidence()
+    report = data["reports"][0]
+    if change == "stale":
+        report["checked_at"] = (utcnow() - timedelta(minutes=6)).isoformat()
+    elif change == "external_dead":
+        report["points"]["remote"]["data"] = False
+    elif change == "unknown":
+        report["provider_status"] = "UNKNOWN"
+    else:
+        del report["checked_at"]
+    assert not rr.recovery_failure(data, "confirm")
+
+
+def test_human_protocol_block_runs_final_check_and_cutover(db, env, monkeypatch):
+    from commander import monitoring
+
+    a, provider, _ = env
+    activate(db, a)
+    data = human_protocol_evidence()
+    record_evidence(db, a.id, data, "suspected")
+    db.commit()
+    i = db.scalar(select(Incident))
+    incident_action(db, i.id, "confirm", "admin")
+    db.commit()
+    record_evidence(db, a.id, data, "suspected", i.id)
+    db.commit()
+    r = db.scalar(select(Recovery))
+    assert r.status == "QUEUED"
+
+    async def collect(*args):
+        return human_protocol_evidence()
+
+    monkeypatch.setattr(monitoring, "collect_agent", collect)
+    asyncio.run(rr.step(r.id))
+    assert rr.load(r.id)["stage"] == "CANDIDATE_CHECK"
+    assert not provider.calls

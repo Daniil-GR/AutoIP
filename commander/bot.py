@@ -451,7 +451,9 @@ def recovery_view(db, user_id, recovery):
 
     text = f"🔄 Восстановление {recovery.id[:8]}\nСтатус: {label(recovery.status)}\n"
     text += "\n".join(
-        f"{label(s['stage'])}: {label(s['status'])}" for s in recovery.stages
+        f"{label(s['stage'])}: {label(s['status'])}"
+        + (f" — {s['reason']}" if s.get("reason") else "")
+        for s in recovery.stages
     )
     text += "\nПлатные действия не выполнялись. Для недостающих настроек используйте защищённую панель."
     return text, keyboard(
