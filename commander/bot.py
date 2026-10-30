@@ -503,8 +503,10 @@ async def deliver(bot):
                             )
                         )
                         db.commit()
-        except Exception:
-            log.error("Notification iteration failed")
+        except Exception as error:
+            from .diagnostics import record_failure
+
+            record_failure("bot", "notification_iteration", error)
         await asyncio.sleep(5)
 
 

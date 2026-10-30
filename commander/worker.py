@@ -7,6 +7,7 @@ from datetime import timedelta
 from sqlalchemy import or_, select
 
 from .database import Agent, ControlTask, SessionLocal, utcnow
+from .diagnostics import record_failure
 from .monitor import verdict
 from .monitoring import collect_agent
 from .services import online, proxy_address, record_evidence, schedule
@@ -83,13 +84,16 @@ async def tick():
                 )
                 task.status, task.result = "succeeded", {"status": result, **evidence}
             db.commit()
-    except Exception:
-        log.error(
-            "Check task failed; task_id=%s", task_id
-        )  # no raw exception/secret URLs
+    except Exception as error:
+        error_id = record_failure(
+            "worker", kind, error, agent_id=agent_id, task_id=task_id
+        )
         with SessionLocal() as db:
             task = db.get(ControlTask, task_id)
-            task.status, task.result = "failed", {"error": "Ошибка обработки проверки"}
+            task.status, task.result = (
+                "failed",
+                {"error": "Ошибка обработки проверки", "error_id": error_id},
+            )
             db.commit()
     return True
 
@@ -98,8 +102,8 @@ async def run():
     while True:
         try:
             busy = await tick()
-        except Exception:
-            log.error("Worker iteration failed")
+        except Exception as error:
+            record_failure("worker", "iteration", error)
             busy = False
         await asyncio.sleep(1 if busy else 5)
 

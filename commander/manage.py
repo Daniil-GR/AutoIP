@@ -80,8 +80,18 @@ def main():
                     row = db.get(SystemSetting, operation_key(args.operation_id))
                     result = row.value if row else {"status": "NOT_FOUND"}
             print(json.dumps(result, ensure_ascii=False))
-        except (PilotError, ValueError) as error:
-            raise SystemExit(str(error)) from None
+        except Exception as error:
+            from .diagnostics import record_failure
+
+            error_id = record_failure(
+                "floating_pilot",
+                args.action,
+                error,
+                agent_id=args.agent_id or "",
+                operation_id=args.operation_id,
+            )
+            message = str(error) if isinstance(error, PilotError) else "Ошибка пилота"
+            raise SystemExit(f"{message}; error_id={error_id}") from None
     elif args.command == "telethon-login":
         import asyncio
         import os

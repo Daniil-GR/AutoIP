@@ -44,3 +44,9 @@ node --check commander/static/app.js
 Тесты сами создают временные SQLite БД. Настоящий PostgreSQL проверяется отдельно на пустой БД `autoip_test` через `AUTOIP_TEST_POSTGRES_URL`. Браузер: `playwright install chromium`, затем `python scripts/browser-smoke.py`; он поднимает и удаляет собственный Commander на случайном loopback-порту, не вызывает провайдеров.
 
 Обновление v0.1: сначала backup, затем `python -m commander.manage adopt-v01` на копии БД. Обычный старт больше не использует `create_all`.
+
+## Журналы
+
+История действий и ошибок доступна в панели и хранится в PostgreSQL.
+Неожиданные ошибки получают error_id для сопоставления с логами сервисов.
+Где искать записи и какие данные исключены: [docs/logging.md](docs/logging.md).

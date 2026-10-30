@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from .config import settings
+from .diagnostics import record_failure
 from .database import (
     AdminSession,
     Agent,
@@ -63,6 +64,22 @@ async def lifespan(app):
 
 
 app = FastAPI(title="AutoIP Commander", version="0.2.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def unexpected_errors(request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as error:
+        # No URL/query, headers, request body or raw exception in diagnostics.
+        error_id = record_failure("api", "request", error)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Внутренняя ошибка. Идентификатор сохранён в журнале.",
+                "error_id": error_id,
+            },
+        )
 
 
 @app.exception_handler(RequestValidationError)

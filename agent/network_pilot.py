@@ -11,9 +11,10 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 STATE_DIR = Path("/var/lib/autoip-floating-pilot")
 UNIT_DIR = Path("/etc/systemd/system")
@@ -243,7 +244,28 @@ def main():
             else commit(args.resource_id)
         )
         print(json.dumps(result))
-    except (RuntimeError, ValueError, OSError, KeyError, subprocess.SubprocessError):
+    except (
+        RuntimeError,
+        ValueError,
+        OSError,
+        KeyError,
+        subprocess.SubprocessError,
+    ) as error:
+        failure = {
+            "error_id": str(uuid4()),
+            "stage": args.action,
+            "error_type": type(error).__name__,
+            "time": time.time(),
+        }
+        print(json.dumps(failure), file=sys.stderr)
+        try:
+            path = state_file(args.resource_id)
+            if path.exists():
+                state = json.loads(path.read_text())
+                state["last_error"] = failure
+                save(path, state)
+        except Exception:
+            pass  # stderr remains available even if local storage is unavailable
         raise SystemExit(
             "Floating IP network pilot stopped; inspect its journal and rollback unit"
         ) from None

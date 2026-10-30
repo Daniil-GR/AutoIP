@@ -48,13 +48,12 @@ python -m commander.manage floating-ip-pilot status --operation-id UUID
 ```sh
 .venv/bin/python -m agent.network_pilot prepare --resource-id UUID --address IPV4 --management MANAGEMENT_IPV4
 .venv/bin/python -m agent.network_pilot commit --resource-id UUID
-.venv/bin/python -m agent.network_pilot rollback --resource-id UUID
 ```
 
 Prepare запрещает менять основной адрес или добавлять уже существующий.
 Проверяются сохранность default route, исходящего адреса и хеша Telemt.
 Журнал: /var/lib/autoip-floating-pilot/UUID.json; unit: autoip-floating-UUID.service.
-Rollback останавливает только свой unit и не освобождает оплачиваемый ресурс
+Аварийный таймер останавливает только свой unit и не освобождает оплачиваемый ресурс
 Cherry. Его удаление требует отдельного согласования и сохранения истории.
 
 В Commander сохраняются FloatingIP, аудит и SystemSetting fip-pilot:UUID.
