@@ -104,7 +104,7 @@ def known_blocked(db, address):
             .where(
                 Incident.observed_ip == address,
                 (Incident.status == "BLOCK_CONFIRMED")
-                | (Incident.decision == "confirm"),
+                | (Incident.decision.in_(["confirm", "auto_confirm"])),
             )
             .limit(1)
         )

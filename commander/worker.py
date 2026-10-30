@@ -16,6 +16,10 @@ log = logging.getLogger(__name__)
 
 
 async def tick():
+    from .reserve_recovery import tick as recovery_tick
+
+    if await recovery_tick():
+        return True
     with SessionLocal() as db:
         schedule(db)
         db.commit()

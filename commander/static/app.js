@@ -27,6 +27,22 @@ const pages = {
   settings: ["⚙", "Настройки", "Безопасность и готовность Commander"],
 };
 const statuses = {
+  RECOVERING: "Восстановление выполняется",
+  QUEUED: "В очереди",
+  RUNNING: "Выполняется",
+  ROLLING_BACK: "Возврат DNS",
+  SUCCEEDED: "Завершено",
+  CANCELLED: "Отменено: доступность восстановилась",
+  ROLLED_BACK: "Выполнен возврат DNS",
+  PREFLIGHT: "Подготовка",
+  LIVE_EXECUTION: "Живое выполнение",
+  FINAL_CHECK: "Финальная проверка блокировки",
+  CANDIDATE_CHECK: "Проверка существующего резерва",
+  DNS_ADD: "Добавление нового A-адреса",
+  DNS_REMOVE: "Удаление старого A-адреса",
+  DNS_VERIFY: "Проверка DNS и MTProto",
+  COMMIT: "Сохранение нового активного IP",
+  ROLLBACK: "Возврат исходной DNS-записи",
   active: "Работает",
   inactive: "Остановлен",
   available: "Доступен",
@@ -465,6 +481,16 @@ function saveButton(fn, label = "Сохранить") {
   };
 }
 const readinessLabels = {
+  stable_public_host: "Клиентский домен или исходный IP согласованы с Telemt",
+  reserve_selected: "Выбран управляемый резерв",
+  reserve_unblocked: "Резерв отсутствует в истории блокировок",
+  reserve_separate: "Резерв отличается от активного и основного IP",
+  reserve_on_interface: "Agent видит резерв и основной IP на интерфейсах",
+  agent_unpaused: "Управление агентом не приостановлено",
+  tested_roundtrip: "Для этого резерва завершён DNS-пилот с возвратом",
+  dns_scoped: "Поддомен входит в разрешённую DNS-зону",
+  mtproto_checker: "Подключён MTProto Checker",
+  mtproto: "Сохранён секрет MTProto",
   agent_online: "Агент на связи",
   public_host: "Определён домен",
   telemt_active: "Telemt активен",
@@ -624,7 +650,7 @@ async function recovery(a) {
     });
     $("dialogBody").replaceChildren(el("p", title(r.status), "warn"));
     for (const stage of r.stages) {
-      $("dialogBody").append(kv(stage.stage, stage.status));
+      $("dialogBody").append(kv(title(stage.stage), title(stage.status)));
       if (stage.readiness) renderReadiness($("dialogBody"), stage.readiness);
       if (stage.reason) $("dialogBody").append(el("p", stage.reason, "note"));
     }

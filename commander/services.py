@@ -19,7 +19,6 @@ from .database import (
     utcnow,
 )
 from .monitor import independent_failure
-from .schemas import AgentConfiguration
 from .security import audit, aware, display_time
 
 ACTIVE_INCIDENTS = ("WAITING_CONFIRMATION", "RECHECKING", "BLOCK_CONFIRMED")
@@ -101,42 +100,26 @@ def request_check(db, agent_id, actor, incident_id=None, key=None):
 
 
 def readiness(db, agent):
-    c = AgentConfiguration(**(agent.configuration or {}))
-    requirements = {
-        "agent_online": online(agent),
-        "public_host": bool(agent.public_host),
-        "telemt_active": agent.facts.get("telemt_service") == "active",
-        "management_ip": bool(c.management_ip),
-        "floating_ip": bool(c.floating_ip),
-        "separate_management_ip": bool(
-            c.management_ip and c.floating_ip and c.management_ip != c.floating_ip
-        ),
-        "cherry_project": bool(c.cherry_project_id),
-        "cherry_server": bool(c.cherry_server_id),
-        "dns_zone": bool(c.dns_zone and c.dns_record),
-        "budget": c.monthly_budget_cents > 0,
-    }
-    for kind, identifier in [
-        ("cherry", c.cherry_integration_id),
-        ("dynadot", c.dns_integration_id),
-    ]:
-        integration = db.get(Integration, identifier) if identifier else None
-        requirements[kind] = bool(
-            integration
-            and integration.kind == kind
-            and integration.status == "verified"
+    from .reserve_recovery import reserve_readiness
+
+    report = reserve_readiness(db, agent)
+    blockers = []
+    if not report["prepared"]:
+        blockers.append(
+            "Не завершена подготовка существующего резерва; проверьте условия ниже"
+        )
+    if not report["enabled"]:
+        blockers.append(
+            "Автоматическое DNS-переключение на резерв отдельно не включено"
         )
     return {
-        "checks": requirements,
-        "monitoring_ready": all(
-            requirements[k] for k in ("agent_online", "public_host", "telemt_active")
-        ),
-        "recovery_ready": False,
-        "live_blockers": [
-            "Сетевой адаптер требует согласованного пилота",
-            "Безопасность DNS-изменения не подтверждена",
-            "Нет второго независимого источника мониторинга",
-        ],
+        "checks": report["checks"],
+        "monitoring_ready": online(agent)
+        and agent.facts.get("telemt_service") == "active",
+        "reserve_prepared": report["prepared"],
+        "recovery_ready": report["prepared"] and report["enabled"],
+        "automation_enabled": report["enabled"],
+        "live_blockers": blockers,
     }
 
 
@@ -151,7 +134,7 @@ def recovery_plan(db, agent_id, actor, key, incident_id=None):
         {
             "stage": "LIVE_EXECUTION",
             "status": "blocked",
-            "reason": "Реальные изменения требуют проверенных адаптеров и отдельного согласования",
+            "reason": "Исполнение не включено либо нет достаточного подтверждения инцидента",
         },
     ]
     recovery = Recovery(
@@ -163,12 +146,18 @@ def recovery_plan(db, agent_id, actor, key, incident_id=None):
     )
     db.add(recovery)
     db.flush()
+    from .reserve_recovery import queue_if_ready
+
+    incident = db.get(Incident, incident_id) if incident_id else None
+    if queue_if_ready(db, recovery, incident):
+        audit(db, actor, "reserve_recovery_queued", recovery.id, agent_id=agent_id)
+        return recovery
     audit(db, actor, "recovery_preflight", recovery.id, agent_id=agent_id)
     db.add(
         Notification(
             topic="recovery",
             target=recovery.id,
-            text=f"{agent.name}: предварительная проверка восстановления завершена. Нужна ручная настройка. Платные операции не выполнялись.",
+            text=f"{agent.name}: предварительная проверка завершена. Живое восстановление не запущено: проверьте готовность и подтверждение инцидента. Новые IP не покупались.",
         )
     )
     return recovery
@@ -217,6 +206,14 @@ def record_evidence(db, agent_id, evidence, result, incident_id=None):
         .with_for_update()
     )
     current_ip = proxy_address(agent)
+    from .reserve_recovery import ACTIVE
+
+    if db.scalar(
+        select(Recovery.id).where(
+            Recovery.agent_id == agent_id, Recovery.status.in_(ACTIVE)
+        )
+    ):
+        return  # Existing recovery owns this incident; do not open a duplicate.
     if active and active.observed_ip != current_ip:
         active.status, active.closed_at, active.next_check_at = (
             "SUPERSEDED",
@@ -290,13 +287,16 @@ def record_evidence(db, agent_id, evidence, result, incident_id=None):
     # Only a dedicated final recheck may advance to recovery.
     if incident_id == active.id and active.decision == "confirm":
         active.status, active.next_check_at = "BLOCK_CONFIRMED", None
-        recovery_plan(db, agent_id, "incident", "incident:" + active.id, active.id)
-        active.status = "MANUAL_REQUIRED"
+        recovery = recovery_plan(
+            db, agent_id, "incident", "incident:" + active.id, active.id
+        )
+        if recovery.status == "MANUAL_REQUIRED":
+            active.status = "MANUAL_REQUIRED"
     elif incident_id == active.id and active.rechecks >= 3:
         prior = db.scalars(
-            select(ControlTask).where(
-                ControlTask.agent_id == agent_id, ControlTask.status == "succeeded"
-            )
+            select(ControlTask)
+            .where(ControlTask.agent_id == agent_id, ControlTask.status == "succeeded")
+            .order_by(ControlTask.created_at, ControlTask.id)
         ).all()
         previous_rechecks = [
             t for t in prior if t.payload.get("incident_id") == active.id
@@ -309,7 +309,12 @@ def record_evidence(db, agent_id, evidence, result, incident_id=None):
                 for t in previous_rechecks[-2:]
             )
         ):
-            recovery_plan(db, agent_id, "scheduler", "incident:" + active.id, active.id)
+            active.status = "BLOCK_CONFIRMED"
+            recovery = recovery_plan(
+                db, agent_id, "scheduler", "incident:" + active.id, active.id
+            )
+            if recovery.status != "MANUAL_REQUIRED":
+                return
         active.status, active.next_check_at = "MANUAL_REQUIRED", None
         db.add(
             Notification(

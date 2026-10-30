@@ -49,6 +49,13 @@ def main():
     dns_pilot.add_argument("--agent-id")
     dns_pilot.add_argument("--resource-id")
     dns_pilot.add_argument("--approved", action="store_true")
+    reserve = sub.add_parser(
+        "reserve-recovery", help="Подготовка режима только существующего резерва"
+    )
+    reserve.add_argument("action", choices=["prepare", "status", "enable", "disable"])
+    reserve.add_argument("agent_id")
+    reserve.add_argument("--resource-id")
+    reserve.add_argument("--approved", action="store_true")
     bootstrap = sub.add_parser("import-bootstrap")
     bootstrap.add_argument("path")
     key = sub.add_parser("vault-init")
@@ -67,7 +74,37 @@ def main():
         ],
     )
     args = parser.parse_args()
-    if args.command == "dns-pilot":
+    if args.command == "reserve-recovery":
+        import json
+        from .reserve_recovery import prepare, reserve_readiness, set_enabled
+        from .dns_pilot import DNSPilotError
+        from .database import Agent
+
+        try:
+            with SessionLocal() as db:
+                if args.action == "prepare":
+                    prepare(db, args.agent_id, args.resource_id)
+                elif args.action in ("enable", "disable"):
+                    set_enabled(
+                        db,
+                        args.agent_id,
+                        args.action == "enable",
+                        approved=args.approved,
+                    )
+                agent = db.get(Agent, args.agent_id)
+                if not agent:
+                    raise DNSPilotError("Агент не найден")
+                report = reserve_readiness(db, agent)
+                db.commit()
+                print(
+                    json.dumps(
+                        {k: v for k, v in report.items() if k != "policy"},
+                        ensure_ascii=False,
+                    )
+                )
+        except DNSPilotError as error:
+            raise SystemExit(str(error)) from None
+    elif args.command == "dns-pilot":
         import asyncio
         import json
         from .dns_roundtrip import prepare, change, verify, load

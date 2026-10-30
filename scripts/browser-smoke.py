@@ -44,7 +44,7 @@ def main():
         seed = """from commander.database import Agent, SessionLocal, utcnow
 with SessionLocal() as db:
  for index in range(3):
-  db.add(Agent(name=['Москва · основной','Франкфурт · резерв','Хельсинки · тест'][index],token_hash='browser-fake-'+str(index),machine_id='browser-'+str(index),public_host='proxy'+str(index)+'.example.com',last_seen=utcnow(),facts={'telemt_service':'active','os':'Ubuntu 24.04'},configuration={}))
+  db.add(Agent(name=['Москва · основной','Франкфурт · резерв','Хельсинки · тест'][index],token_hash='browser-fake-'+str(index),machine_id='browser-'+str(index),public_host='browser'+str(index)+'.vetka.rest',last_seen=utcnow(),facts={'telemt_service':'active','os':'Ubuntu 24.04'},configuration={}))
  db.commit()
 """
         subprocess.run(

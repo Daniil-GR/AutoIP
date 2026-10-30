@@ -244,6 +244,7 @@ def independent_failure(evidence):
         if o.get("country") == "RU"
         and o.get("state") == "failed"
         and o.get("scope") != "web-endpoint"
+        and (not evidence.get("ip") or o.get("target") == evidence["ip"])
     ]
     return (
         len({o.get("source") for o in failures}) >= 2

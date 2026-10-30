@@ -223,6 +223,20 @@ def agent_view(db, user_id, agent_id, mode):
         if sni
         else "нет проверок"
     )
+    from .reserve_recovery import reserve_readiness
+
+    reserve = reserve_readiness(db, agent)
+    automation = (
+        "приостановлена"
+        if agent.paused
+        else "включено переключение на подготовленный резерв"
+        if reserve["enabled"]
+        else "резерв подготовлен; переключение выключено"
+        if reserve["prepared"]
+        else "резерв использован; переключение выключено"
+        if reserve["policy"].get("consumed_by")
+        else "ручной безопасный режим"
+    )
     text = (
         f"🖥 {agent.name}\n{agent.public_host or 'Домен не определён'}:{agent.proxy_port}\n"
         f"DNS: {config.get('dns_record') or 'не задан'}\n"
@@ -235,7 +249,7 @@ def agent_view(db, user_id, agent_id, mode):
         f"Веб-прокси: {web_state}\n"
         f"SNI РФ / зарубежье: {sni_state}\n"
         f"Спонсорство: {sponsorship_label(sponsor.status if sponsor else None)}\n"
-        f"Автоматизация: {'приостановлена' if agent.paused else 'ручной безопасный режим'}"
+        f"Автоматизация: {automation}"
     )
     rows = [
         [button(db, user_id, "🔍 Проверить из РФ", "check", agent.id)],
@@ -430,8 +444,15 @@ def dispatch_action(db, user_id, item):
 
 
 def recovery_view(db, user_id, recovery):
-    text = f"🔄 Восстановление {recovery.id[:8]}\nСтатус: {recovery.status}\n"
-    text += "\n".join(f"{s['stage']}: {s['status']}" for s in recovery.stages)
+    from .reserve_recovery import STAGE_LABELS
+
+    def label(value):
+        return STAGE_LABELS.get(value, value)
+
+    text = f"🔄 Восстановление {recovery.id[:8]}\nСтатус: {label(recovery.status)}\n"
+    text += "\n".join(
+        f"{label(s['stage'])}: {label(s['status'])}" for s in recovery.stages
+    )
     text += "\nПлатные действия не выполнялись. Для недостающих настроек используйте защищённую панель."
     return text, keyboard(
         [
@@ -483,6 +504,20 @@ async def deliver(bot):
                             if topic == "incident"
                             else None
                         )
+                        if topic == "recovery" and db.get(Recovery, target):
+                            markup = keyboard(
+                                [
+                                    [
+                                        button(
+                                            db,
+                                            user_id,
+                                            "Этапы восстановления",
+                                            "recovery_status",
+                                            target,
+                                        )
+                                    ]
+                                ]
+                            )
                         db.commit()
                     try:
                         sent = await bot.send_message(
