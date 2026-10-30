@@ -111,7 +111,7 @@ async def click_edit(client, message, data, *, timeout=25):
     if len(choices) != 1:
         raise NodeHostError("Интерфейс Node Host изменился; действие не выполнено")
     before = signature(message)
-    await asyncio.wait_for(message.click(*choices[0]), timeout=timeout)
+    await asyncio.wait_for(message.click(data=data), timeout=timeout)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         after = await client.get_messages(BOT_ID, ids=message.id)

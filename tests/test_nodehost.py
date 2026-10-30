@@ -95,8 +95,8 @@ def test_dialog_does_not_consume_unrelated_newer_reply(monkeypatch):
 
     original, edited = msg("Locations"), msg("Configurator")
 
-    async def click(*_):
-        pass
+    async def click(*, data):
+        assert data == b"select"
 
     original.click = click
 

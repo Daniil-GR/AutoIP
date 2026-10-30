@@ -71,6 +71,10 @@ async def root_menu(client):
     async with client.conversation(BOT_ID, timeout=25, exclusive=True) as conversation:
         await conversation.send_message("🛒 Купить")
         result = await conversation.get_response()
+    # Read the actual stored message, rather than clicking an update snapshot.
+    result = await client.get_messages(BOT_ID, ids=result.id)
+    if not result or result.out:
+        raise NodeHostError("Не получено меню покупки Node Host")
     exact_data(result, r"select_geo;10")
     return result
 
@@ -203,7 +207,7 @@ async def purchase(quote_id, operation_id, *, approved=False):
         ]
         if len(positions) != 1:
             raise NodeHostError("Кнопка оплаты изменилась; нужна сверка операции")
-        await asyncio.wait_for(m.click(*positions[0]), timeout=25)
+        await asyncio.wait_for(m.click(data=data), timeout=25)
         for _ in range(25):
             await asyncio.sleep(2)
             replies = await client.get_messages(BOT_ID, min_id=baseline, limit=30)

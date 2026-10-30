@@ -70,7 +70,8 @@ def purchase_setup(db, monkeypatch):
 
     client = Client()
 
-    async def click(*_):
+    async def click(*, data):
+        assert data == DATA.encode()
         client.clicks += 1
 
     m.click = click
@@ -141,3 +142,31 @@ def test_unknown_purchase_prevents_new_purchase_in_same_account(db, purchase_set
     with pytest.raises(nodehost.NodeHostError, match="неопределённый"):
         asyncio.run(orders.purchase(quote_id, str(uuid4()), approved=True))
     assert client.clicks == 0
+
+
+def test_root_menu_rejects_changed_stored_message():
+    class Conversation:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+        async def send_message(self, text):
+            assert text == "🛒 Купить"
+
+        async def get_response(self):
+            return message(callback="select_geo;10")
+
+    class Client:
+        def conversation(self, peer, **kwargs):
+            return Conversation()
+
+        async def get_messages(self, peer, *, ids):
+            assert ids == 10
+            current = message(callback="unexpected")
+            current.out = False
+            return current
+
+    with pytest.raises(nodehost.NodeHostError):
+        asyncio.run(orders.root_menu(Client()))
