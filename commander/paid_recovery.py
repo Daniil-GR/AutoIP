@@ -637,6 +637,7 @@ async def step(identifier):
             resource_id=rid,
             new=result["ipv4"],
             candidates=candidates,
+            candidate_failures=[],
         )
     elif stage == "ATTACH":
         if not await detach_rejected(identifier, s):
@@ -657,13 +658,40 @@ async def step(identifier):
         if report.get("mtproto_verified"):
             save(identifier, "NETWORK_COMMIT", candidate_proof=report)
         elif report.get("provider_status") in ("RKN_BLOCK", "DATA_CUT"):
+            failures = [
+                item
+                for item in s.get("candidate_failures", [])
+                if item.get("ipv4") == s["new"]
+                and timedelta(0)
+                <= utcnow() - aware(datetime.fromisoformat(item["at"]))
+                < timedelta(minutes=10)
+            ]
+            if failures and utcnow() - aware(
+                datetime.fromisoformat(failures[-1]["at"])
+            ) < timedelta(minutes=1):
+                save(identifier, stage, next_at=next_at(60))
+                return
+            failures.append(
+                {"ipv4": s["new"], "at": utcnow().isoformat(), "report": report}
+            )
+            if len(failures) < 3:
+                save(
+                    identifier, stage, candidate_failures=failures, next_at=next_at(60)
+                )
+                return
             with SessionLocal() as db:
                 row = db.scalar(
                     select(FloatingIP).where(FloatingIP.resource_id == s["resource_id"])
                 )
                 row.status = "rejected_blocked"
                 db.commit()
-            save(identifier, "ORDER", order_id=None, next_at=next_at(30))
+            save(
+                identifier,
+                "ORDER",
+                order_id=None,
+                candidate_failures=failures,
+                next_at=next_at(30),
+            )
         else:
             # Do not purchase on inconclusive or externally degraded checks.
             stop(

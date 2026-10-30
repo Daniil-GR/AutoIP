@@ -160,6 +160,56 @@ def test_dns_handoff_refreshes_expired_incident_evidence(db, paid_env, monkeypat
     assert paid.protocol_block(db.get(Incident, r.incident_id).evidence)
 
 
+@pytest.mark.parametrize("recovers", [False, True])
+def test_candidate_requires_repeated_failure_before_another_purchase(
+    db, paid_env, monkeypatch, recovers
+):
+    a, _ = paid_env
+    r = start(db, a)
+    paid.save(
+        r.id, "CANDIDATE_VERIFY", resource_id=RESOURCE, new=NEW, order_id=str(uuid4())
+    )
+    now = utcnow()
+    monkeypatch.setattr(paid, "utcnow", lambda: now)
+    attempts = 0
+
+    async def protocol(*args):
+        nonlocal attempts
+        attempts += 1
+        return {
+            "target": NEW,
+            "provider_status": "OK" if recovers and attempts > 1 else "DATA_CUT",
+            "mtproto_verified": recovers and attempts > 1,
+        }
+
+    monkeypatch.setattr(rr, "protocol_verification", protocol)
+    asyncio.run(paid.step(r.id))
+    assert paid.load(r.id)["stage"] == "CANDIDATE_VERIFY"
+    db.expire_all()
+    assert (
+        db.scalar(select(FloatingIP).where(FloatingIP.resource_id == RESOURCE)).status
+        != "rejected_blocked"
+    )
+    now += timedelta(seconds=61)
+    asyncio.run(paid.step(r.id))
+    if recovers:
+        assert paid.load(r.id)["stage"] == "NETWORK_COMMIT"
+    else:
+        assert paid.load(r.id)["stage"] == "CANDIDATE_VERIFY"
+        now += timedelta(seconds=61)
+        asyncio.run(paid.step(r.id))
+        assert (
+            paid.load(r.id)["stage"] == "ORDER" and paid.load(r.id)["order_id"] is None
+        )
+        db.expire_all()
+        assert (
+            db.scalar(
+                select(FloatingIP).where(FloatingIP.resource_id == RESOURCE)
+            ).status
+            == "rejected_blocked"
+        )
+
+
 def test_known_history_is_not_attached(db, paid_env, monkeypatch):
     a, _ = paid_env
     r = start(db, a)
