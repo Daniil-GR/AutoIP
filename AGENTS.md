@@ -40,3 +40,15 @@ tag, registration, or Telethon session. Agent tag-write permissions remain close
 Retain existing adapter code for reference; resume this feature only at the owner's
 explicit request. The owner chose stable hostname/port plus tag reuse as the
 operating approach; cross-IP sponsorship behavior still needs a real approved test.
+
+## Recovery policy agreed on 2026-10-30
+
+Read docs/recovery-policy.md when implementing recovery. The owner rejected
+AutoIP's proposed fixed replacement-count and monthly-budget caps. Do not
+reintroduce them as requirements. Preserve cost accounting, provider quotas,
+serialized/idempotent purchases and explicit approval for the real pilot.
+Hold rejected managed IPs during candidate search; delete old/rejected managed
+Floating IPs only after a verified safe cutover. Never delete the primary IP.
+The owner accepts about 30 minutes of outage; target 10 minutes after confirmed
+blocking, report a delay at 30 minutes. This is not permission to enable live
+paid or DNS operations now. Provider-quota exhaustion cleanup is still open.
