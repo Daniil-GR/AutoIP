@@ -6,7 +6,7 @@ from .monitor import CheckHost
 from .nodehost import known_blocked, public_ip
 from .security import aware
 
-FOREIGN_COUNTRIES = ("DE", "NL", "FI")
+FOREIGN_COUNTRIES = ("DE", "NL", "FR")
 
 
 def outcome(report, address):

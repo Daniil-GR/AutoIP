@@ -170,3 +170,36 @@ def test_root_menu_rejects_changed_stored_message():
 
     with pytest.raises(nodehost.NodeHostError):
         asyncio.run(orders.root_menu(Client()))
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_only_unchanged_unpaid_speed_menu_can_retry(monkeypatch, changed):
+    initial = message(callback="select_geo;10")
+    initial.buttons[0][0].text = "10GBps"
+    current = message(callback="other" if changed else "select_geo;10")
+    current.buttons[0][0].text = "10GBps"
+    calls = []
+
+    class Client:
+        async def get_messages(self, peer, *, ids):
+            assert ids == initial.id and peer == nodehost.BOT_ID
+            return current
+
+    async def click(client, menu, data):
+        calls.append(data)
+        if len(calls) == 1:
+            raise nodehost.NodeHostError("Ignored callback")
+        return "locations"
+
+    monkeypatch.setattr(orders, "click_edit", click)
+    if changed:
+        with pytest.raises(nodehost.NodeHostError):
+            asyncio.run(orders.open_locations(Client(), initial))
+        assert len(calls) == 1
+    else:
+        assert asyncio.run(orders.open_locations(Client(), initial)) == "locations"
+        assert calls == [b"select_geo;10", b"select_geo;10"]
+
+    with pytest.raises(nodehost.NodeHostError):
+        asyncio.run(orders.open_locations(Client(), message()))
+    assert len(calls) == (1 if changed else 2)

@@ -17,6 +17,7 @@ from .nodehost import (
     parse_access,
     remember_receipt,
     session,
+    signature,
 )
 from .security import aware, audit
 
@@ -79,12 +80,29 @@ async def root_menu(client):
     return result
 
 
+async def open_locations(client, message):
+    """One retry for the unpaid speed selector, only if its menu is unchanged.
+
+    Node Host sometimes ignores the first callback on a newly sent root menu.
+    This exception is deliberately limited to select_geo, never payment.
+    """
+    data = exact_data(message, r"select_geo;10")
+    before = signature(message)
+    try:
+        return await click_edit(client, message, data)
+    except NodeHostError:
+        current = await client.get_messages(BOT_ID, ids=message.id)
+        if not current or signature(current) != before:
+            raise
+        return await click_edit(client, current, data)
+
+
 async def prepare(telegram_id):
     """Browse only. The final buy callback is not sent by this function."""
     async with session(telegram_id) as client:
         m = await root_menu(client)
+        m = await open_locations(client, m)
         for pattern in (
-            r"select_geo;10",
             r"select_configuration;10;Poland",
             r"configurator;10;Poland",
         ):

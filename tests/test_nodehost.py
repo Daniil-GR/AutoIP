@@ -155,7 +155,7 @@ def report(state="reachable", foreign=True):
     ]
     observations += [
         {"country": c, "protocol": "tcp", "state": "reachable"}
-        for c in (("DE", "NL", "FI") if foreign else ("DE",))
+        for c in (("DE", "NL", "FR") if foreign else ("DE",))
     ]
     return {
         "source": "check-host",
