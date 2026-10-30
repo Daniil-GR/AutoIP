@@ -447,6 +447,8 @@ async def delete_owned(identifier, s, resource_id):
             raise PilotError("Удаление management/active IP запрещено")
         _, _, _, api = context(db, a.id)
         dns_state = {"dns_integration_id": s["dns_integration_id"]}
+        journal = db.get(SystemSetting, state_key(identifier))
+        requested = journal.value.get("delete_requests", {}).get(resource_id)
     zone = snapshot(await rr.dns_client(dns_state).records(MANAGED_DNS_ZONE))
     if any(
         address == str(v)
@@ -468,6 +470,17 @@ async def delete_owned(identifier, s, resource_id):
         if raw.get("type") != "floating-ip" or summary["ipv4"] != address:
             raise PilotError("Provider ownership mismatch")
         inventory = await api.request("GET", "/projects/" + s["project"] + "/ips")
+        if not isinstance(inventory, list) or len(inventory) >= 100:
+            raise PilotError("Неполный список проекта; удаление запрещено")
+        if requested:
+            if utcnow() - aware(datetime.fromisoformat(requested["at"])) > timedelta(
+                minutes=10
+            ):
+                raise PilotError("Cherry не подтвердил завершение удаления за 10 минут")
+            # A deleted IP may briefly remain readable after disappearing from
+            # project inventory. Do not repeat DELETE or treat its cached body
+            # as new ownership. Wait for absence proof on a later read.
+            return False
         if not any(str(x.get("id")) == resource_id for x in inventory):
             raise PilotError("Ресурс не принадлежит проекту")
         from .floating_pilot import relation_id
@@ -512,14 +525,32 @@ async def delete_owned(identifier, s, resource_id):
             for v in record.values()
         ):
             raise PilotError("Адрес появился в DNS перед удалением")
-        # DELETE is resource-specific and idempotently reconciled by subsequent GET.
+        # Persist intent before the one DELETE; a lost response is read-reconciled.
+        with SessionLocal() as db:
+            parent = db.get(SystemSetting, state_key(identifier))
+            requests = dict(parent.value.get("delete_requests", {}))
+            if resource_id in requests:
+                raise PilotError("Удаление уже отправлялось; нужна сверка")
+            requests[resource_id] = {"at": utcnow().isoformat(), "status": "submitted"}
+            parent.value = {**parent.value, "delete_requests": requests}
+            audit(
+                db,
+                "worker",
+                "paid_resource_delete_requested",
+                resource_id,
+                agent_id=s["agent_id"],
+            )
+            db.commit()
         await api.request("DELETE", "/ips/" + resource_id)
         try:
             await api.request("GET", "/ips/" + resource_id)
             return False
         except PilotError as error:
-            if error.provider_status != 404:
+            if error.provider_status not in (403, 404) or not await resource_absent(
+                api, s["project"], resource_id
+            ):
                 raise
+            raw = None
     if (
         not raw
         and resource_id in s.get("configured", [])
@@ -529,6 +560,19 @@ async def delete_owned(identifier, s, resource_id):
     with SessionLocal() as db:
         row = db.scalar(select(FloatingIP).where(FloatingIP.resource_id == resource_id))
         row.released_at = utcnow()
+        parent = db.get(SystemSetting, state_key(identifier))
+        requests = dict(parent.value.get("delete_requests", {}))
+        requests[resource_id] = {
+            **requests.get(resource_id, {}),
+            "status": "released",
+            "verified_at": utcnow().isoformat(),
+        }
+        parent.value = {
+            **parent.value,
+            "delete_requests": requests,
+            "failures": 0,
+            "error_id": None,
+        }
         audit(
             db, "worker", "paid_resource_released", resource_id, agent_id=s["agent_id"]
         )

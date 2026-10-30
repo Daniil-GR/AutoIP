@@ -626,3 +626,59 @@ def test_403_requires_complete_project_absence_proof(
     db.expire_all()
     row = db.scalar(select(FloatingIP).where(FloatingIP.resource_id == rid))
     assert bool(row.released_at) is (not still_owned)
+
+
+def test_cleanup_waits_for_cached_deleted_resource_without_second_delete(
+    db, paid_env, monkeypatch
+):
+    from commander.floating_pilot import PilotError
+
+    a, _ = paid_env
+    recovery = start(db, a)
+    state = paid.load(recovery.id)
+    rid = str(uuid4())
+    db.add(
+        FloatingIP(
+            agent_id=a.id,
+            integration_id="cherry",
+            resource_id=rid,
+            ipv4="9.9.9.9",
+            managed=True,
+            status="rejected_blocked",
+        )
+    )
+    db.commit()
+    deleted = False
+    cache_expired = False
+    deletes = []
+
+    async def request(self, method, path, payload=None):
+        nonlocal deleted
+        if method == "DELETE":
+            deletes.append(path)
+            deleted = True
+            return None
+        assert method == "GET"
+        if path.endswith("/ips"):
+            return [] if deleted else [{"id": rid}]
+        if cache_expired:
+            raise PilotError("denied", provider_status=403)
+        return {"id": rid, "address": "9.9.9.9", "type": "floating-ip"}
+
+    monkeypatch.setattr(rr.CherryPilotAPI, "request", request)
+    assert not asyncio.run(paid.delete_owned(recovery.id, state, rid))
+    assert not asyncio.run(paid.delete_owned(recovery.id, state, rid))
+    db.expire_all()
+    assert (
+        db.scalar(select(FloatingIP).where(FloatingIP.resource_id == rid)).released_at
+        is None
+    )
+    assert len(deletes) == 1
+    cache_expired = True
+    assert asyncio.run(paid.delete_owned(recovery.id, state, rid))
+    db.expire_all()
+    assert db.scalar(
+        select(FloatingIP).where(FloatingIP.resource_id == rid)
+    ).released_at
+    assert paid.load(recovery.id)["delete_requests"][rid]["status"] == "released"
+    assert len(deletes) == 1
