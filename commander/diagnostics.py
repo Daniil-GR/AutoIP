@@ -39,6 +39,9 @@ def record_failure(
             for f in traceback.extract_tb(error.__traceback__)[-8:]
         ],
     }
+    status = getattr(error, "provider_status", None)
+    if type(status) is int and 100 <= status <= 599:
+        event["provider_status"] = status
     log.error(json.dumps(event, ensure_ascii=False))
     try:
         with SessionLocal() as db:

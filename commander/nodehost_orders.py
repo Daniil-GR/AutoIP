@@ -68,6 +68,13 @@ def quote_data(message):
     }
 
 
+def funds_decline(text):
+    match = re.fullmatch(
+        r"❌ На вашем балансе не хватает ([0-9]+(?:[.,][0-9]+)?) ₽", text.strip()
+    )
+    return match[1].replace(",", ".") if match else None
+
+
 async def root_menu(client):
     async with client.conversation(BOT_ID, timeout=25, exclusive=True) as conversation:
         await conversation.send_message("🛒 Купить")
@@ -238,6 +245,29 @@ async def purchase(quote_id, operation_id, *, approved=False):
                 raise NodeHostError(
                     "Получено несколько VPS; требуется сверка владельца"
                 )
+            if len(replies) == 1 and not receipts:
+                missing = funds_decline(replies[0].raw_text)
+                if missing is not None:
+                    with SessionLocal() as db:
+                        op = db.get(SystemSetting, "nodehost-op:" + operation_id)
+                        op.value = {
+                            **op.value,
+                            "status": "DECLINED_FUNDS",
+                            "missing_rub": missing,
+                            "response_message_id": replies[0].id,
+                        }
+                        audit(
+                            db,
+                            "commander",
+                            "nodehost_order_declined_funds",
+                            operation_id,
+                        )
+                        db.commit()
+                    return {
+                        "status": "DECLINED_FUNDS",
+                        "receipt_id": None,
+                        "missing_rub": missing,
+                    }
             if not receipts:
                 continue
             receipt = receipts[0]

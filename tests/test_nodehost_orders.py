@@ -126,6 +126,31 @@ def test_changed_price_prevents_financial_checkpoint(db, purchase_setup):
     assert client.clicks == 0
 
 
+def test_explicit_insufficient_balance_is_declined_without_repeat(db, purchase_setup):
+    quote, client, _ = purchase_setup
+    original = client.get_messages
+
+    async def messages(peer, **kwargs):
+        if kwargs.get("min_id") is not None:
+            return [
+                SimpleNamespace(
+                    id=20, out=False, raw_text="❌ На вашем балансе не хватает 7.25 ₽"
+                )
+            ]
+        return await original(peer, **kwargs)
+
+    client.get_messages = messages
+    operation = str(uuid4())
+    result = asyncio.run(orders.purchase(quote, operation, approved=True))
+    assert result["status"] == "DECLINED_FUNDS" and result["missing_rub"] == "7.25"
+    assert (
+        asyncio.run(orders.purchase(quote, operation, approved=True))["status"]
+        == "DECLINED_FUNDS"
+    )
+    assert client.clicks == 1 and db.get(SystemSetting, "vps-receipt:20") is None
+    assert orders.funds_decline("Неизвестная ошибка: пароль private") is None
+
+
 def test_unknown_purchase_prevents_new_purchase_in_same_account(db, purchase_setup):
     quote_id, client, _ = purchase_setup
     old_quote = str(uuid4())

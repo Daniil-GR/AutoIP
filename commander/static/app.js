@@ -28,6 +28,7 @@ const pages = {
   settings: ["⚙", "Настройки", "Безопасность и готовность Commander"],
 };
 const statuses = {
+  DECLINED_FUNDS: "Недостаточно средств у хостера",
   vps_access: "Доступ к VPS",
   telemt_profile: "Профиль Telemt",
   tls_lineage: "Сертификат польской ноды",

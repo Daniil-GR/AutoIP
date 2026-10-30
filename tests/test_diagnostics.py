@@ -56,6 +56,18 @@ def test_database_failure_keeps_original_error_id_and_safe_log(monkeypatch, capl
     assert "private" not in caplog.text
 
 
+def test_provider_http_status_is_recorded_without_response_body(db, monkeypatch):
+    from commander.floating_pilot import PilotError
+
+    monkeypatch.setattr(diagnostics, "SessionLocal", sessionmaker(db.bind))
+    diagnostics.record_failure(
+        "recovery", "ATTACH", PilotError("private provider body", provider_status=400)
+    )
+    row = db.scalar(select(Audit))
+    assert row.details["provider_status"] == 400
+    assert "private provider body" not in json.dumps(row.details)
+
+
 def test_api_unexpected_error_returns_only_correlation_id(client, monkeypatch, caplog):
     from commander.app import app
 

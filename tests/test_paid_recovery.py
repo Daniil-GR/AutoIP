@@ -165,6 +165,93 @@ def test_delete_never_removes_current_or_management(db, paid_env):
         asyncio.run(paid.delete_owned(r.id, s, RESOURCE))
 
 
+@pytest.mark.parametrize(
+    "protected",
+    [None, "dns", "other_server", "pending_network", "lost_response", "active"],
+)
+def test_detach_rejected_frees_slot_without_deleting_or_forgetting_history(
+    db, paid_env, monkeypatch, protected
+):
+    a, dns = paid_env
+    r = start(db, a)
+    rid = str(uuid4())
+    address = OLD if protected == "active" else "9.9.9.9"
+    db.add(
+        FloatingIP(
+            agent_id=a.id,
+            integration_id="cherry",
+            resource_id=rid,
+            ipv4=address,
+            managed=True,
+            status="rejected_blocked",
+        )
+    )
+    db.commit()
+    paid.save(r.id, "ATTACH", candidates=[rid], configured=[rid], new=NEW)
+    s = paid.load(r.id)
+    if protected == "dns":
+        dns.zone["dns_sub_list"].append(
+            {"sub_host": "other", "record_type": "a", "record_value1": address}
+        )
+    calls = []
+    attached = True
+
+    def raw():
+        return {
+            "id": rid,
+            "address": address,
+            "type": "floating-ip",
+            "targeted_to": {"id": 999 if protected == "other_server" else 123}
+            if attached
+            else None,
+            "routed_to": {"id": "primary", "address": OLD, "type": "primary-ip"}
+            if attached
+            else None,
+        }
+
+    async def request(self, method, path, payload=None):
+        nonlocal attached
+        calls.append((method, path, payload))
+        if method == "PUT":
+            assert payload == {"targeted_to": "0"}
+            attached = False
+            if protected == "lost_response":
+                raise paid.PilotError("Response lost after successful detach")
+            return {}
+        assert method == "GET"  # No POST or DELETE under any outcome.
+        return [raw()] if path.endswith("/ips") else raw()
+
+    jobs = []
+
+    def network(identifier, state, action, resource, address=""):
+        jobs.append((action, resource))
+        return protected != "pending_network"
+
+    monkeypatch.setattr(rr.CherryPilotAPI, "request", request)
+    monkeypatch.setattr(paid, "network_job", network)
+    if protected in ("dns", "other_server", "active"):
+        with pytest.raises(Exception, match="Detach"):
+            asyncio.run(paid.detach_rejected(r.id, s))
+        assert attached and not any(c[0] == "PUT" for c in calls)
+    elif protected == "lost_response":
+        with pytest.raises(paid.PilotError):
+            asyncio.run(paid.detach_rejected(r.id, s))
+        assert not attached
+        assert asyncio.run(paid.detach_rejected(r.id, s))
+        assert len([c for c in calls if c[0] == "PUT"]) == 1
+    else:
+        assert not asyncio.run(paid.detach_rejected(r.id, s))
+        assert jobs == [("remove", rid)]
+        if protected == "pending_network":
+            assert attached and not any(c[0] == "PUT" for c in calls)
+        else:
+            assert not attached
+            assert asyncio.run(paid.detach_rejected(r.id, paid.load(r.id)))
+    db.expire_all()
+    row = db.scalar(select(FloatingIP).where(FloatingIP.resource_id == rid))
+    assert row.status == "rejected_blocked" and not row.released_at
+
+
 def test_quota_is_shared_per_project_not_per_agent(db, paid_env):
     a, _ = paid_env
     s = paid.load(start(db, a).id)

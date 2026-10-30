@@ -322,6 +322,106 @@ async def resource_absent(api, project, resource_id):
     return not any(str(x.get("id")) == resource_id for x in inventory)
 
 
+async def detach_rejected(identifier, s):
+    """Free attachment slots while retaining paid candidates and their history."""
+    from .floating_pilot import relation_id
+    from .services import proxy_address
+    from .dns_pilot import snapshot
+    from .dns_scope import MANAGED_DNS_ZONE
+
+    with SessionLocal() as db:
+        agent = require_context(db, s)
+        _, _, _, api = context(db, agent.id)
+        rejected = [
+            (row.resource_id, row.ipv4)
+            for row in db.scalars(
+                select(FloatingIP).where(
+                    FloatingIP.agent_id == agent.id,
+                    FloatingIP.integration_id == s["integration_id"],
+                    FloatingIP.managed.is_(True),
+                    FloatingIP.released_at.is_(None),
+                    FloatingIP.status.in_(("rejected_history", "rejected_blocked")),
+                )
+            )
+            if row.resource_id in s.get("candidates", [])
+        ]
+        protected = {s["management"], proxy_address(agent), s.get("new")}
+    if not rejected:
+        return True
+    zone = snapshot(await rr.dns_client(s).records(MANAGED_DNS_ZONE))
+    dns_addresses = {
+        str(value)
+        for key in ("dns_main_list", "dns_sub_list")
+        for record in zone.get(key, [])
+        for value in record.values()
+    }
+    inventory = await api.request("GET", "/projects/" + s["project"] + "/ips")
+    if not isinstance(inventory, list) or len(inventory) >= 100:
+        raise PilotError("Неполный список проекта; Detach запрещён")
+    for rid, address in rejected:
+        if address in protected or address in dns_addresses:
+            raise PilotError("Detach запрещён: адрес активен или используется DNS")
+        matches = [item for item in inventory if str(item.get("id")) == rid]
+        if len(matches) != 1 or resource_summary(matches[0])["ipv4"] != address:
+            raise PilotError("Не подтверждено владение кандидатом для Detach")
+        raw = matches[0]
+        server = relation_id(raw.get("targeted_to") or raw.get("assigned_to"))
+        routed = raw.get("routed_to")
+        if server and server != s["server"]:
+            raise PilotError("Detach запрещён: кандидат назначен другому серверу")
+        if relation_id(routed) and (
+            not isinstance(routed, dict)
+            or routed.get("address") != s["management"]
+            or routed.get("type") != "primary-ip"
+        ):
+            raise PilotError("Detach запрещён: другая сеть назначения")
+        if not server and not relation_id(routed):
+            continue
+        if rid in s.get("configured", []) and not network_job(
+            identifier, s, "remove", rid
+        ):
+            return False
+        with SessionLocal() as db:
+            require_context(db, s)
+            current = db.scalar(select(FloatingIP).where(FloatingIP.resource_id == rid))
+            if (
+                not current
+                or not current.managed
+                or current.released_at
+                or current.agent_id != s["agent_id"]
+                or current.integration_id != s["integration_id"]
+                or current.ipv4 != address
+                or current.status not in ("rejected_history", "rejected_blocked")
+            ):
+                raise PilotError("Владение кандидатом изменилось; Detach запрещён")
+        await api.request("PUT", "/ips/" + rid, {"targeted_to": "0"})
+        detached = await api.request("GET", "/ips/" + rid)
+        if resource_summary(detached)["ipv4"] != address:
+            raise PilotError("Адрес изменился после Detach кандидата")
+        if relation_id(
+            detached.get("targeted_to") or detached.get("assigned_to")
+        ) or relation_id(detached.get("routed_to")):
+            return False
+        with SessionLocal() as db:
+            audit(
+                db,
+                "worker",
+                "paid_rejected_candidate_detached",
+                rid,
+                agent_id=s["agent_id"],
+            )
+            db.commit()
+        save(
+            identifier,
+            "ATTACH",
+            detached_rejected=list(
+                dict.fromkeys([*s.get("detached_rejected", []), rid])
+            ),
+        )
+        return False
+    return True
+
+
 async def delete_owned(identifier, s, resource_id):
     """Delete a single recorded resource only after both DNS and ownership checks."""
     from .services import proxy_address
@@ -539,6 +639,8 @@ async def step(identifier):
             candidates=candidates,
         )
     elif stage == "ATTACH":
+        if not await detach_rejected(identifier, s):
+            return
         await attach_one(s["order_id"], approved=True)
         save(identifier, "NETWORK_PREPARE")
     elif stage == "NETWORK_PREPARE":
