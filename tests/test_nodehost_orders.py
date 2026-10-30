@@ -11,7 +11,7 @@ from commander import nodehost_orders as orders, nodehost
 from commander.database import SystemSetting, utcnow
 
 TEXT = """⚡️ Информация о сервере
-CPU: 2
+CPU: 1
 RAM: 3
 Диск: 25 GB
 ОС: Ubuntu 24.04
@@ -33,7 +33,7 @@ def test_quote_checks_real_config_period_and_both_price_units():
     q = orders.quote_data(message())
     assert q["price_usd"] == "0.26" and q["price_rub"] == "20.95" and q["days"] == 1
     for text in (
-        TEXT.replace("CPU: 2", "CPU: 1"),
+        TEXT.replace("CPU: 1", "CPU: 2"),
         TEXT.replace("25 GB", "45 GB"),
         TEXT.replace("1 день", "1 месяц"),
     ):

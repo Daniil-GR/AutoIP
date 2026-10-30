@@ -1278,7 +1278,7 @@ async function vps(root) {
   root.append(el('p', 'Замена VPS через Telegram готовится к пилоту. Автопокупки Node Host выключены. Доступы зашифрованы; пароли сюда не выводятся.', 'notice'));
   root.append(button('Подготовить заказ на сутки', async () => {
     const integrations = (await api('/api/integrations')).filter(i => i.kind === 'telethon');
-    modal('Предложение Node Host', 'Польша, Ubuntu 24.04, 2 CPU / 3 ГБ / 25 ГБ. Сейчас будет открыт только предварительный расчёт, без оплаты. Не работайте параллельно с меню хостера.');
+    modal('Предложение Node Host', 'Польша, Ubuntu 24.04, 1 CPU / 3 ГБ / 25 ГБ. Сейчас будет открыт только предварительный расчёт, без оплаты. Не работайте параллельно с меню хостера.');
     const select = el('select');
     for (const i of integrations) {const o = el('option', i.name); o.value = i.id; select.append(o);}
     $('dialogBody').append(select);

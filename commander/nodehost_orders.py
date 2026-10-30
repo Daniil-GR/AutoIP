@@ -39,7 +39,7 @@ def exact_data(message, pattern):
 def quote_data(message):
     text = message.raw_text
     for pattern in (
-        r"CPU:\s*2\b",
+        r"CPU:\s*1\b",
         r"RAM:\s*3\b",
         r"Диск:\s*25 GB\b",
         r"ОС:\s*Ubuntu 24\.04\b",
@@ -86,7 +86,7 @@ async def prepare(telegram_id):
         ):
             m = await click_edit(client, m, exact_data(m, pattern))
         for action, target, index in (
-            ("plusc", 2, 3),
+            ("plusc", 1, 3),
             ("plusr", 3, 4),
             ("plusd", 25, 5),
         ):
@@ -100,7 +100,7 @@ async def prepare(telegram_id):
                 m = await click_edit(client, m, data)
             else:
                 raise NodeHostError("Конфигуратор не достиг выбранной конфигурации")
-        m = await click_edit(client, m, exact_data(m, r"conf_buy;10;Poland;2;3;25"))
+        m = await click_edit(client, m, exact_data(m, r"conf_buy;10;Poland;1;3;25"))
         for pattern in (
             r"select_os_version;10;Poland;\d+;1;Ubuntu",
             r"select_duration;10;Poland;\d+;1;Ubuntu;23",
