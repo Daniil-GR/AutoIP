@@ -51,4 +51,8 @@ Hold rejected managed IPs during candidate search; delete old/rejected managed
 Floating IPs only after a verified safe cutover. Never delete the primary IP.
 The owner accepts about 30 minutes of outage; target 10 minutes after confirmed
 blocking, report a delay at 30 minutes. This is not permission to enable live
-paid or DNS operations now. Provider-quota exhaustion cleanup is still open.
+paid or DNS operations now. On provider-quota exhaustion, free rejected managed
+candidate IPs after stopping search; keep their blocked-address history across
+release/restart. Exclude the management IP and any address still used by live
+DNS/configuration from candidate cleanup. Respect the project-wide rolling
+order quota; a new day does not imply fresh, previously unseen IPv4 addresses.
