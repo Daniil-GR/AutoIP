@@ -183,14 +183,30 @@ def logout(request: Request, actor=Depends(admin), db: Session = Depends(get_db)
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok", "mode": "safe", "writes_enabled": False}
+def health(db: Session = Depends(get_db)):
+    from .paid_recovery import enabled_count
+
+    paid = enabled_count(db)
+    reserve = any(
+        x.value.get("enabled")
+        for x in db.scalars(
+            select(SystemSetting).where(SystemSetting.key.like("auto-reserve:%"))
+        )
+    )
+    return {
+        "status": "ok",
+        "mode": "approved_automation" if paid or reserve else "safe",
+        "writes_enabled": bool(paid or reserve),
+    }
 
 
 @app.get("/api/overview")
 def overview(actor=Depends(admin), db: Session = Depends(get_db)):
     agents = db.scalars(select(Agent).where(Agent.revoked.is_(False))).all()
     online = sum(serialize_agent(a)["online"] for a in agents)
+    from .paid_recovery import enabled_count
+
+    paid = enabled_count(db)
     return {
         "total": len(agents),
         "online": online,
@@ -198,8 +214,9 @@ def overview(actor=Depends(admin), db: Session = Depends(get_db)):
         "incidents": len(
             db.scalars(select(Incident).where(Incident.closed_at.is_(None))).all()
         ),
-        "mode": "safe",
-        "real_ip_purchases": False,
+        "mode": "approved_automation" if paid else "safe",
+        "real_ip_purchases": bool(paid),
+        "paid_agents": paid,
         "costs": cost_report(db),
     }
 

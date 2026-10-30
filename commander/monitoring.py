@@ -177,9 +177,20 @@ async def collect_agent(agent_id, host, port, ip):
             protocol="https",
         )
 
-    tcp, protocol, web = await asyncio.gather(
-        collect(host, port, ip), checker_report(agent_id, ip or host, port), web_check()
-    )
+    protocol = await checker_report(agent_id, ip or host, port)
+
+    async def transport_check():
+        if protocol.get("mtproto_verified"):
+            return {
+                "reports": [],
+                "observations": [],
+                "target": host,
+                "ip": ip,
+                "port": port,
+            }
+        return await collect(host, port, ip)
+
+    tcp, web = await asyncio.gather(transport_check(), web_check())
     tcp["reports"] = [{**r, "scope": "mtproto-tcp"} for r in tcp["reports"]]
     tcp["observations"] = [{**o, "scope": "mtproto-tcp"} for o in tcp["observations"]]
     primary = [*tcp["reports"], protocol]

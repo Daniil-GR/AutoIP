@@ -18,6 +18,10 @@ log = logging.getLogger(__name__)
 async def tick():
     from .reserve_recovery import tick as recovery_tick
 
+    from .paid_recovery import tick as paid_tick
+
+    if await paid_tick():
+        return True
     if await recovery_tick():
         return True
     with SessionLocal() as db:

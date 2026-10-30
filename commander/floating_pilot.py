@@ -27,8 +27,9 @@ from .vault import decrypt
 
 
 class PilotError(RuntimeError):
-    def __init__(self, message, provider_status=None):
+    def __init__(self, message, provider_status=None, retry_after=None):
         self.provider_status = provider_status
+        self.retry_after = retry_after
         super().__init__(message)
 
 
@@ -44,7 +45,7 @@ class CherryPilotAPI:
             )
             or method == "POST"
             and re.fullmatch(r"/projects/\d+/ips", path)
-            or method == "PUT"
+            or method in ("PUT", "DELETE")
             and re.fullmatch(r"/ips/[a-f0-9-]{36}", path)
         )
         if not permitted:
@@ -66,11 +67,22 @@ class CherryPilotAPI:
                     method, path, json=payload, params=params
                 )
                 response.raise_for_status()
-                return response.json()
+                return (
+                    None
+                    if response.status_code == 204
+                    or (method in ("PUT", "DELETE") and not response.content)
+                    else response.json()
+                )
         except httpx.HTTPStatusError as error:
             status = error.response.status_code
             raise PilotError(
-                f"Cherry API: HTTP {status}; запрос не повторён", provider_status=status
+                f"Cherry API: HTTP {status}; запрос не повторён",
+                provider_status=status,
+                retry_after=(
+                    min(86400, max(1, int(error.response.headers["Retry-After"])))
+                    if error.response.headers.get("Retry-After", "").isdigit()
+                    else None
+                ),
             ) from None
         except (httpx.HTTPError, ValueError):
             # Never propagate provider bodies, request headers or server passwords.

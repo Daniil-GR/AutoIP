@@ -216,7 +216,8 @@ def commit(resource_id):
     verify_invariants(state["before"], snapshot(), state["management"])
     command("/usr/bin/systemctl", "is-active", state["unit"])
     command("/usr/bin/systemctl", "enable", state["unit"])
-    command("/usr/bin/systemctl", "stop", state["rollback"] + ".timer")
+    if state["status"] == "STAGED":
+        command("/usr/bin/systemctl", "stop", state["rollback"] + ".timer")
     state["status"] = "COMMITTED"
     save(path, state)
     return {

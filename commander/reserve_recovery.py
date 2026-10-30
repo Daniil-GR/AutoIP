@@ -33,7 +33,7 @@ from .floating_pilot import CherryPilotAPI, known_blocked, relation_id
 from .security import audit, aware
 from .vault import decrypt
 
-ACTIVE = ("QUEUED", "RUNNING", "ROLLING_BACK")
+ACTIVE = ("QUEUED", "RUNNING", "ROLLING_BACK", "PAID_RUNNING")
 
 
 def policy_key(agent_id):
@@ -116,9 +116,14 @@ def reserve_readiness(db, agent):
         checks["tested_roundtrip"] = bool(
             p.get("stage") == "COMPLETED_RETURNED"
             and p.get("agent_id") == agent.id
-            and p.get("resource_id") == candidate.resource_id
-            and p.get("old") == proxy_address(agent)
-            and p.get("new") == candidate.ipv4
+            and (
+                policy.get("mode") == "paid_candidate"
+                or (
+                    p.get("resource_id") == candidate.resource_id
+                    and p.get("old") == proxy_address(agent)
+                    and p.get("new") == candidate.ipv4
+                )
+            )
             and p.get("host") == cfg.get("dns_record")
             and p.get("forward_check", {}).get("verified")
             and p.get("return_check", {}).get("verified")
@@ -214,8 +219,11 @@ def assert_authorized(db, state):
     agent = db.get(Agent, state["agent_id"])
     policy = db.get(SystemSetting, policy_key(agent.id))
     cfg = agent.configuration or {}
+    from .paid_recovery import enabled
+
     if (
         not policy
+        or (policy.value.get("mode") == "paid_candidate" and not enabled(db, agent.id))
         or not policy.value.get("enabled")
         or policy.value.get("resource_id") != state["resource_id"]
         or agent.paused
@@ -292,6 +300,7 @@ def recovery_failure(evidence, decision):
 
 def queue_if_ready(db, recovery, incident):
     from .services import proxy_address
+    from .paid_recovery import authorization, enabled
 
     agent = db.get(Agent, recovery.agent_id)
     report = reserve_readiness(db, agent)
@@ -301,7 +310,10 @@ def queue_if_ready(db, recovery, incident):
         and incident
         and incident.status == "BLOCK_CONFIRMED"
         and incident.observed_ip == proxy_address(agent)
-        and recovery_failure(incident.evidence, incident.decision)
+        and (
+            recovery_failure(incident.evidence, incident.decision)
+            or (enabled(db, agent.id) and authorization(incident))
+        )
     ):
         return False
     other = db.scalar(
@@ -348,7 +360,11 @@ def queue_if_ready(db, recovery, incident):
         Notification(
             topic="recovery",
             target=recovery.id,
-            text=f"{agent.name}: подтверждена проблема в РФ. Подготовлено переключение на существующий резерв; новые IP не покупаются.",
+            text=(
+                f"{agent.name}: подготовлено DNS-переключение на проверенный новый Floating IP."
+                if report["policy"].get("mode") == "paid_candidate"
+                else f"{agent.name}: подтверждена проблема в РФ. Подготовлено переключение на существующий резерв; новые IP не покупаются."
+            ),
         )
     )
     return True
@@ -473,6 +489,10 @@ async def step(identifier):
         cfg = a.configuration or {}
         policy = db.get(SystemSetting, policy_key(a.id))
         enabled = bool(policy and policy.value.get("enabled"))
+        if policy and policy.value.get("mode") == "paid_candidate":
+            from .paid_recovery import enabled as paid_enabled
+
+            enabled = enabled and paid_enabled(db, a.id)
         resource = db.scalar(
             select(FloatingIP).where(FloatingIP.resource_id == s["resource_id"])
         )
@@ -532,7 +552,13 @@ async def step(identifier):
         if result == "reachable":
             finish(identifier, "CANCELLED", "Доступность исходного IP восстановилась")
             return
-        if result != "suspected" or not recovery_failure(evidence, i.decision):
+        from .paid_recovery import authorization, enabled
+
+        with SessionLocal() as db:
+            paid_confirmed = enabled(db, s["agent_id"]) and authorization(i, evidence)
+        if result != "suspected" or not (
+            recovery_failure(evidence, i.decision) or paid_confirmed
+        ):
             finish(
                 identifier,
                 "MANUAL_REQUIRED",
@@ -692,7 +718,12 @@ async def step(identifier):
             policy = db.get(SystemSetting, policy_key(a.id))
             policy.value = {**policy.value, "enabled": False, "consumed_by": identifier}
             r.status = "SUCCEEDED"
-            reason = "DNS и MTProto проверены; активирован существующий резерв, режим исчерпан и выключен"
+            paid_mode = policy.value.get("mode") == "paid_candidate"
+            reason = (
+                "DNS и MTProto проверены; новый Floating IP активирован, ожидается безопасная очистка старых адресов"
+                if paid_mode
+                else "DNS и MTProto проверены; активирован существующий резерв, режим исчерпан и выключен"
+            )
             row = db.get(SystemSetting, state_key(identifier))
             row.value = {
                 **row.value,
@@ -710,7 +741,9 @@ async def step(identifier):
                 Notification(
                     topic="recovery",
                     target=r.id,
-                    text=reason + ". Новые IP не покупались; ресурсы не удалялись.",
+                    text=reason
+                    if paid_mode
+                    else reason + ". Новые IP не покупались; ресурсы не удалялись.",
                 )
             )
             audit(
@@ -794,6 +827,18 @@ async def tick():
 
 
 STAGE_LABELS = {
+    "PAID_RUNNING": "Поиск нового Floating IP",
+    "NETWORK_PREFLIGHT": "Проверка сетевого помощника",
+    "ORDER": "Получение Floating IP",
+    "ATTACH": "Назначение IP серверу",
+    "NETWORK_PREPARE": "Добавление IP в Linux",
+    "CANDIDATE_VERIFY": "Проверка кандидата из РФ",
+    "NETWORK_COMMIT": "Сохранение IP после перезагрузки",
+    "DNS_HANDOFF": "Подготовка DNS-переключения",
+    "HANDOFF": "Выполняется DNS-переключение",
+    "CLEANUP": "Освобождение старых адресов",
+    "QUOTA_CLEANUP": "Квота исчерпана: очистка кандидатов",
+    "DONE": "Завершено",
     "PREFLIGHT": "Подготовка",
     "LIVE_EXECUTION": "Живое выполнение",
     "FINAL_CHECK": "Финальная проверка блокировки",

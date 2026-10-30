@@ -13,6 +13,7 @@ from .database import (
     FloatingIP,
     Incident,
     Integration,
+    Job,
     Notification,
     Recovery,
     SystemSetting,
@@ -103,6 +104,29 @@ def readiness(db, agent):
     from .reserve_recovery import reserve_readiness
 
     report = reserve_readiness(db, agent)
+    from .paid_recovery import enabled as paid_enabled, policy_key as paid_policy_key
+
+    if paid_enabled(db, agent.id):
+        policy = db.get(SystemSetting, paid_policy_key(agent.id)).value
+        probe = db.get(Job, policy.get("probe_job_id", ""))
+        checks = {
+            k: v
+            for k, v in report["checks"].items()
+            if not k.startswith("reserve_") and k != "tested_roundtrip"
+        }
+        checks["network_helper"] = bool(probe and probe.status == "succeeded")
+        ready = all(checks.values())
+        return {
+            "checks": checks,
+            "monitoring_ready": online(agent),
+            "reserve_prepared": False,
+            "recovery_ready": ready,
+            "automation_enabled": True,
+            "mode": "paid_automatic",
+            "live_blockers": []
+            if ready
+            else ["Не выполнены условия автоматического восстановления"],
+        }
     blockers = []
     if not report["prepared"]:
         blockers.append(
@@ -149,7 +173,9 @@ def recovery_plan(db, agent_id, actor, key, incident_id=None):
     from .reserve_recovery import queue_if_ready
 
     incident = db.get(Incident, incident_id) if incident_id else None
-    if queue_if_ready(db, recovery, incident):
+    from .paid_recovery import queue_if_ready as queue_paid
+
+    if queue_paid(db, recovery, incident) or queue_if_ready(db, recovery, incident):
         audit(db, actor, "reserve_recovery_queued", recovery.id, agent_id=agent_id)
         return recovery
     audit(db, actor, "recovery_preflight", recovery.id, agent_id=agent_id)
@@ -284,6 +310,17 @@ def record_evidence(db, agent_id, evidence, result, incident_id=None):
         )
     else:
         active.evidence = evidence
+    from .paid_recovery import enabled as paid_enabled, protocol_block
+
+    if (
+        paid_enabled(db, agent_id)
+        and independent_failure(evidence)
+        and protocol_block(evidence)
+    ):
+        active.status = "BLOCK_CONFIRMED"
+        active.decision = active.decision or "auto_confirm"
+        recovery_plan(db, agent_id, "two-sources", "incident:" + active.id, active.id)
+        return
     # Only a dedicated final recheck may advance to recovery.
     if incident_id == active.id and active.decision == "confirm":
         active.status, active.next_check_at = "BLOCK_CONFIRMED", None
@@ -303,13 +340,24 @@ def record_evidence(db, agent_id, evidence, result, incident_id=None):
         ]
         if (
             len(previous_rechecks) >= 2
-            and independent_failure(evidence)
+            and (
+                independent_failure(evidence)
+                or (paid_enabled(db, agent_id) and protocol_block(evidence))
+            )
             and all(
-                t.result.get("status") == "suspected" and independent_failure(t.result)
+                t.result.get("status") == "suspected"
+                and (
+                    independent_failure(t.result)
+                    or (
+                        paid_enabled(db, agent_id)
+                        and protocol_block(t.result, fresh=False)
+                    )
+                )
                 for t in previous_rechecks[-2:]
             )
         ):
             active.status = "BLOCK_CONFIRMED"
+            active.decision = active.decision or "auto_confirm"
             recovery = recovery_plan(
                 db, agent_id, "scheduler", "incident:" + active.id, active.id
             )

@@ -162,7 +162,7 @@ def test_composition_sends_only_mtproto_port_to_protocol_checker(client, monkeyp
     result = asyncio.run(
         monitoring.collect_agent(identifier, "proxy.example.com", 9443, "8.8.8.8")
     )
-    assert set(calls) == {("tcp", 9443), ("mtproto", 9443), ("https", 443)}
+    assert set(calls) == {("mtproto", 9443), ("https", 443)}
     assert result["mtproto_verified"] is True
     assert result["web_endpoint"]["webproxy_data_verified"] is False
     assert result["atlas_fallback"]["status"] == "standby"

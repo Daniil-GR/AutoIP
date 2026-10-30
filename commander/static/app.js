@@ -277,6 +277,7 @@ async function dashboard(root) {
     ["На связи", o.online],
     ["Нет связи", o.offline],
     ["Открытых инцидентов", o.incidents],
+    ["Агентов с автопокупкой", o.paid_agents || 0],
   ]) {
     const c = el("div", "", "stat");
     c.append(el("div", label, "label"), el("strong", val));
@@ -481,6 +482,7 @@ function saveButton(fn, label = "Сохранить") {
   };
 }
 const readinessLabels = {
+  network_helper: "Сетевой помощник ноды проверен",
   stable_public_host: "Клиентский домен или исходный IP согласованы с Telemt",
   reserve_selected: "Выбран управляемый резерв",
   reserve_unblocked: "Резерв отсутствует в истории блокировок",

@@ -1,0 +1,17 @@
+[Unit]
+Description=AutoIP restricted additive network job
+[Service]
+Type=exec
+User=root
+WorkingDirectory=/opt/AutoIP
+ExecStart=/opt/AutoIP/.venv/bin/python -m agent.network_helper
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/systemd/system /var/lib/autoip-floating-pilot
+PrivateTmp=true
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_FOWNER
+TimeoutStartSec=90

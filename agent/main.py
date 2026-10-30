@@ -62,10 +62,16 @@ def run(args, timeout=5):
 
 
 def helper_request(operation, **payload):
+    return local_request(
+        "/run/autoip-telemt-helper.sock", {"operation": operation, **payload}
+    )
+
+
+def local_request(path, payload):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(15)
-        client.connect("/run/autoip-telemt-helper.sock")
-        client.sendall(json.dumps({"operation": operation, **payload}).encode() + b"\n")
+        client.settimeout(90)
+        client.connect(path)
+        client.sendall(json.dumps(payload).encode() + b"\n")
         data = b""
         while not data.endswith(b"\n") and len(data) < 65536:
             chunk = client.recv(4096)
@@ -229,6 +235,18 @@ def enroll():
 
 def execute(job):
     kind = job.get("kind")
+    if kind == "floating_network":
+        try:
+            result = local_request("/run/autoip-network-helper.sock", job["payload"])
+            return {
+                "status": "succeeded",
+                "result": {"facts": {}, "message": result.get("status", "ready")},
+            }
+        except (OSError, ValueError, RuntimeError, KeyError):
+            return {
+                "status": "failed",
+                "result": {"error": "Restricted network helper rejected operation"},
+            }
     if kind == "status":
         return {"status": "succeeded", "result": {"facts": facts()}}
     if kind == "apply_ad_tag":

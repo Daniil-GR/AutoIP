@@ -56,6 +56,13 @@ def main():
     reserve.add_argument("agent_id")
     reserve.add_argument("--resource-id")
     reserve.add_argument("--approved", action="store_true")
+    paid = sub.add_parser(
+        "paid-recovery", help="Согласованный режим автоматической покупки и смены IP"
+    )
+    paid.add_argument("action", choices=["probe", "enable", "disable", "status"])
+    paid.add_argument("agent_id")
+    paid.add_argument("--approved", action="store_true")
+    paid.add_argument("--probe-id")
     bootstrap = sub.add_parser("import-bootstrap")
     bootstrap.add_argument("path")
     key = sub.add_parser("vault-init")
@@ -74,6 +81,21 @@ def main():
         ],
     )
     args = parser.parse_args()
+    if args.command == "paid-recovery":
+        import json
+        from .paid_recovery import configure
+
+        with SessionLocal() as db:
+            value = configure(
+                db,
+                args.agent_id,
+                args.action,
+                approved=args.approved,
+                probe_id=args.probe_id,
+            )
+            db.commit()
+            print(json.dumps(value, ensure_ascii=False))
+        return
     if args.command == "reserve-recovery":
         import json
         from .reserve_recovery import prepare, reserve_readiness, set_enabled

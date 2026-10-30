@@ -30,6 +30,7 @@ from .database import (
     Notification,
     Recovery,
     SessionLocal,
+    SystemSetting,
     Sponsorship,
     utcnow,
 )
@@ -226,9 +227,13 @@ def agent_view(db, user_id, agent_id, mode):
     from .reserve_recovery import reserve_readiness
 
     reserve = reserve_readiness(db, agent)
+    from .paid_recovery import enabled as paid_enabled
+
     automation = (
         "приостановлена"
         if agent.paused
+        else "включены автопокупки и замена IP"
+        if paid_enabled(db, agent.id)
         else "включено переключение на подготовленный резерв"
         if reserve["enabled"]
         else "резерв подготовлен; переключение выключено"
@@ -288,9 +293,12 @@ def agent_view(db, user_id, agent_id, mode):
 async def start(message: Message):
     with SessionLocal() as db:
         markup = menu(db, message.from_user.id)
+        from .paid_recovery import enabled_count
+
+        paid_count = enabled_count(db)
         db.commit()
     await message.answer(
-        "AutoIP Commander\nВыберите раздел. Платные операции отключены.",
+        f"AutoIP Commander\nВыберите раздел. Автопокупки разрешены для агентов: {paid_count}.",
         reply_markup=markup,
     )
 
@@ -323,7 +331,10 @@ def dispatch_action(db, user_id, item):
         agents = db.scalars(select(Agent).where(Agent.revoked.is_(False))).all()
         count = sum(online(a) for a in agents)
         interval = get_policy(db).monitor_interval_seconds
-        text = f"📊 Всего агентов: {len(agents)}\nОнлайн: {count}\nОфлайн: {len(agents) - count}\nИнтервал проверок: {interval} сек.\nОсновные: Check-Host и MTProto Checker. RIPE Atlas — дополнительно.\nПлатные операции отключены."
+        from .paid_recovery import enabled_count
+
+        paid_count = enabled_count(db)
+        text = f"📊 Всего агентов: {len(agents)}\nОнлайн: {count}\nОфлайн: {len(agents) - count}\nИнтервал проверок: {interval} сек.\nОсновной: MTProto Checker; подтверждение: Check-Host. RIPE Atlas — дополнительно.\nАвтопокупки разрешены для агентов: {paid_count}."
     elif action in ("agents", "checks", "recovery", "automation"):
         text = "Выберите агента"
         markup = agent_buttons(db, user_id, action)
@@ -455,7 +466,11 @@ def recovery_view(db, user_id, recovery):
         + (f" — {s['reason']}" if s.get("reason") else "")
         for s in recovery.stages
     )
-    text += "\nПлатные действия не выполнялись. Для недостающих настроек используйте защищённую панель."
+    paid = db.get(SystemSetting, "paid-recovery:" + recovery.id)
+    if paid:
+        text += f"\nАвтоматическая замена. Получено адресов: {len(paid.value.get('candidates', []))}. Расходы доступны в разделе «Расходы»."
+    else:
+        text += "\nПлатные действия не выполнялись. Для недостающих настроек используйте защищённую панель."
     return text, keyboard(
         [
             [button(db, user_id, "Обновить этапы", "recovery_status", recovery.id)],
