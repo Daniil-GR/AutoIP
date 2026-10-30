@@ -161,6 +161,8 @@ def context(db, agent_id):
     if not agent or agent.revoked:
         raise PilotError("Агент отсутствует или отозван")
     cfg = agent.configuration or {}
+    if cfg.get("provider", "cherry") != "cherry":
+        raise PilotError("Cherry операции разрешены только агентам Cherry")
     account = db.get(Integration, cfg.get("cherry_integration_id", ""))
     if not account or account.kind != "cherry" or account.status != "verified":
         raise PilotError("Нужна проверенная Cherry интеграция")

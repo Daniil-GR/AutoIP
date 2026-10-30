@@ -13,6 +13,10 @@ from cryptography.fernet import Fernet
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
+os.environ.setdefault(
+    "PLAYWRIGHT_BROWSERS_PATH", str(ROOT / ".local-test" / "playwright-browsers")
+)
+os.environ.setdefault("PLAYWRIGHT_SKIP_BROWSER_GC", "1")
 
 
 def main():
@@ -106,6 +110,7 @@ with SessionLocal() as db:
                         "agents",
                         "monitoring",
                         "ips",
+                        "vps",
                         "sponsorship",
                         "integrations",
                         "incidents",
@@ -163,7 +168,7 @@ with SessionLocal() as db:
                     assert not errors, errors
                     browser.close()
                 print(
-                    "Browser checks passed: desktop, mobile, 8 sections, settings persistence, agent setup, encrypted integration form; no external mutations."
+                    "Browser checks passed: desktop, mobile, all sections, settings persistence, agent setup, encrypted integration form; no external mutations."
                 )
             finally:
                 server.terminate()

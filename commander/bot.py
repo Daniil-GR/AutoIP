@@ -132,6 +132,7 @@ def menu(db, user_id):
         ("🔍 Проверить доступность", "checks"),
         ("🔄 Восстановление прокси", "recovery"),
         ("🌐 Floating IP", "ips"),
+        ("▣ VPS Node Host", "vps"),
         ("💰 Расходы", "costs"),
         ("📜 История операций", "history"),
         ("⚙️ Настройки автоматизации", "automation"),
@@ -416,6 +417,24 @@ def dispatch_action(db, user_id, item):
     elif action.startswith("incident:"):
         incident_action(db, target, action.split(":", 1)[1], actor)
         text = "Решение сохранено. Для подтверждённой блокировки сначала выполняется заключительная проверка."
+    elif action == "vps":
+        from .nodehost import resources
+
+        items = resources(db)
+        text = (
+            "▣ VPS Node Host\nАвтопокупки VPS выключены; готовится отдельный пилот.\n"
+        )
+        text += (
+            "\n".join(
+                r["ipv4"]
+                + " · "
+                + ("Найден в истории" if r["status"] == "discovered" else r["status"])
+                for r in items[:20]
+            )
+            or "Нет импортированных VPS"
+        )
+        text += "\nПроверка SSH и ОС доступна в разделе VPS Node Host веб-панели. Секреты в Telegram не отправляйте."
+        markup = menu(db, user_id)
     elif action in ("ips", "agent_ips"):
         query = select(FloatingIP).order_by(FloatingIP.created_at.desc()).limit(20)
         if action == "agent_ips":

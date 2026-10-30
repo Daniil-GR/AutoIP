@@ -21,6 +21,18 @@ def main():
     sub.add_parser("migrate")
     sub.add_parser("adopt-v01")
     sub.add_parser("policy-init")
+    nodehost = sub.add_parser(
+        "nodehost", help="Импорт и безопасная диагностика VPS Node Host"
+    )
+    nodehost.add_argument(
+        "action", choices=["discover", "status", "inspect", "check", "quote", "order"]
+    )
+    nodehost.add_argument("--integration-id")
+    nodehost.add_argument("--addresses", nargs="+", default=[])
+    nodehost.add_argument("--receipt-id", type=int)
+    nodehost.add_argument("--quote-id")
+    nodehost.add_argument("--operation-id")
+    nodehost.add_argument("--approved", action="store_true")
     telethon = sub.add_parser("telethon-login")
     telethon.add_argument("name", nargs="?", default="Telegram account")
     telethon.add_argument("--integration-id")
@@ -78,9 +90,54 @@ def main():
             "ripe_atlas",
             "mtproto",
             "mtproto_checker",
+            "telemt_profile",
+            "vps_access",
         ],
     )
     args = parser.parse_args()
+    if args.command == "nodehost":
+        import asyncio
+        import json
+        from .nodehost import discover, resources
+        from .database import SystemSetting
+        from .vps_bootstrap import inspect as inspect_vps
+        from .vps_preflight import check
+
+        if args.action == "quote":
+            from .nodehost_orders import prepare
+
+            result = asyncio.run(prepare(args.integration_id))
+        elif args.action == "order":
+            from .nodehost_orders import purchase
+
+            result = asyncio.run(
+                purchase(args.quote_id, args.operation_id, approved=args.approved)
+            )
+        elif args.action == "discover":
+            result = asyncio.run(discover(args.integration_id, args.addresses))
+            result = {
+                "found": [
+                    {k: r[k] for k in ("ipv4", "source_message_id")}
+                    for r in result["found"]
+                ],
+                "missing": result["missing"],
+            }
+        elif args.action == "status":
+            with SessionLocal() as db:
+                result = resources(db)
+        else:
+            with SessionLocal() as db:
+                item = db.get(SystemSetting, "vps-receipt:" + str(args.receipt_id))
+                if not item:
+                    raise SystemExit("VPS не найден")
+                data = dict(item.value)
+            result = (
+                asyncio.run(inspect_vps(data["credential_id"], allow_first_pin=True))
+                if args.action == "inspect"
+                else asyncio.run(check(data["ipv4"]))
+            )
+        print(json.dumps(result, ensure_ascii=False))
+        return
     if args.command == "paid-recovery":
         import json
         from .paid_recovery import configure
@@ -323,6 +380,9 @@ def main():
             "telethon": ["api_id", "api_hash", "session"],
             "ripe_atlas": ["api_key"],
             "mtproto": ["secret"],
+            "mtproto_checker": ["api_key"],
+            "telemt_profile": ["domain", "secret", "ad_tag"],
+            "vps_access": ["ipv4", "username", "password"],
         }[args.kind]
         name = input("Название интеграции: ").strip()
         credentials = {

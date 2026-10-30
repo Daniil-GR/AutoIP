@@ -56,3 +56,15 @@ candidate IPs after stopping search; keep their blocked-address history across
 release/restart. Exclude the management IP and any address still used by live
 DNS/configuration from candidate cleanup. Respect the project-wide rolling
 order quota; a new day does not imply fresh, previously unseen IPv4 addresses.
+
+## Node Host VPS replacement, agreed on 2026-10-31
+
+The owner additionally selected `pl.vetka.rest` for a separate whole-VPS
+replacement strategy through `nodehost_bot`: Poland, Ubuntu 24.04, 2 vCPU,
+3 GB RAM, 25 GB disk, one-day rental. Do not apply Cherry Floating IP actions
+to those servers. The two strategies must stay isolated. Preserve the owner's
+hello secret and ad_tag through encrypted profiles; no MTProxybot registration.
+Read docs/nodehost-v2.md for verified scope and unfinished integration.
+Live Node Host purchases, deletion and DNS cutover require a concrete approved
+pilot; browsing the configuration menu is authorized. Report deletion/refund
+refusal and retain resource accounting. Never try to bypass hoster restrictions.

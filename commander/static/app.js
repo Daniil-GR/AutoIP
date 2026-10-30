@@ -13,6 +13,7 @@ const pages = {
   agents: ["◈", "Агенты", "Серверы Telemt и индивидуальные настройки"],
   monitoring: ["⌁", "Мониторинг", "Наблюдения из России и других стран"],
   ips: ["◎", "Floating IP", "Учёт адресов и расходов"],
+  vps: ["▣", "VPS Node Host", "Польские VPS, проверка SSH и перенос Telemt"],
   sponsorship: [
     "✦",
     "Спонсорство",
@@ -27,6 +28,11 @@ const pages = {
   settings: ["⚙", "Настройки", "Безопасность и готовность Commander"],
 };
 const statuses = {
+  vps_access: "Доступ к VPS",
+  telemt_profile: "Профиль Telemt",
+  tls_lineage: "Сертификат польской ноды",
+  existing_current: "Исходная польская нода",
+  blocked: "Заблокирован",
   RECOVERING: "Восстановление выполняется",
   QUEUED: "В очереди",
   RUNNING: "Выполняется",
@@ -259,6 +265,7 @@ async function render() {
     agents: agentsPage,
     monitoring,
     ips,
+    vps,
     sponsorship,
     integrations,
     incidents,
@@ -543,6 +550,7 @@ async function editAgent(a) {
     ["dns_zone", "DNS-зона — только vetka.rest"],
     ["dns_record", "Поддомен vetka.rest, например lt.vetka.rest"],
     ["telethon_integration_id", "Telegram-аккаунт Telethon"],
+    ["vps_profile_integration_id", "Профиль Telemt для новых VPS"],
     ["mtproto_integration_id", "Секрет MTProto (из хранилища)"],
     ["checker_integration_id", "MTProto Checker (только MTProto)"],
     ["mtproto_secret_format", "Формат секрета MTProto: dd или ee"],
@@ -568,6 +576,7 @@ async function editAgent(a) {
         key === "provider"
           ? [
               ["cherry", "Cherry Servers"],
+              ["nodehost", "Node Host — замена VPS через Telegram"],
               ["other", "Другой провайдер"],
             ]
           : [
@@ -576,7 +585,9 @@ async function editAgent(a) {
                 .filter(
                   (i) =>
                     i.kind ===
-                    (key.startsWith("cherry")
+                    (key.startsWith("vps_profile")
+                      ? "telemt_profile"
+                      : key.startsWith("cherry")
                       ? "cherry"
                       : key.startsWith("telethon")
                         ? "telethon"
@@ -887,6 +898,7 @@ function integrationForm() {
     ["ripe_atlas", "RIPE Atlas (дополнительный источник)"],
     ["mtproto_checker", "MTProto Checker"],
     ["mtproto", "MTProto secret"],
+    ["telemt_profile", "Профиль польского Telemt (секрет и ad_tag)"],
   ]) {
     const o = el("option", t);
     o.value = v;
@@ -908,6 +920,7 @@ function integrationForm() {
       ripe_atlas: ["api_key"],
       mtproto_checker: ["api_key"],
       mtproto: ["secret"],
+      telemt_profile: ["domain", "secret", "ad_tag"],
     }[select.value];
     for (const key of keys) {
       const f = field(key, "", "password");
@@ -1258,4 +1271,55 @@ function providerError(value) {
 
 function boolLabel(value) {
   return value === true ? "да" : value === false ? "нет" : "нет данных";
+}
+
+async function vps(root) {
+  const data = await api('/api/nodehost/resources');
+  root.append(el('p', 'Замена VPS через Telegram готовится к пилоту. Автопокупки Node Host выключены. Доступы зашифрованы; пароли сюда не выводятся.', 'notice'));
+  root.append(button('Подготовить заказ на сутки', async () => {
+    const integrations = (await api('/api/integrations')).filter(i => i.kind === 'telethon');
+    modal('Предложение Node Host', 'Польша, Ubuntu 24.04, 2 CPU / 3 ГБ / 25 ГБ. Сейчас будет открыт только предварительный расчёт, без оплаты. Не работайте параллельно с меню хостера.');
+    const select = el('select');
+    for (const i of integrations) {const o = el('option', i.name); o.value = i.id; select.append(o);}
+    $('dialogBody').append(select);
+    saveButton(async () => {
+      const q = await write('/api/nodehost/quote', {integration_id:select.value});
+      modal('Подтвердить покупку VPS', 'Сутки: ' + q.price_rub + ' ₽ (' + q.price_usd + ' $ по данным бота). Это платная покупка одного VPS. Установка и изменение DNS автоматически не запускаются.');
+      const operationId = crypto.randomUUID();
+      saveButton(async () => {
+        const r = await write('/api/nodehost/order', {quote_id:q.quote_id, operation_id:operationId, approved:true});
+        closeModal(); toast(r.status === 'ALLOCATED' ? 'VPS приобретён; доступы зашифрованы' : 'Исход заказа требует сверки. Повторную покупку не запускайте.');
+        await render();
+      }, 'Подтверждаю покупку на сутки');
+    }, 'Рассчитать без оплаты');
+  }));
+  root.append(button('Найти VPS в истории Telegram', async () => {
+    const integrations = (await api('/api/integrations')).filter(i => i.kind === 'telethon');
+    modal('Импорт польских VPS', 'Укажите IP уже купленных серверов. Команда читает историю nodehost_bot и сохраняет найденные доступы зашифрованно. Покупок и установки нет.');
+    const wrap = el('div', '', 'field'), select = el('select');
+    for (const i of integrations) {const option = el('option', i.name); option.value = i.id; select.append(option);}
+    wrap.append(el('label', 'Telegram-аккаунт'), select);
+    const addresses = field('IPv4 через пробел');
+    $('dialogBody').append(wrap, addresses.wrap);
+    saveButton(async () => {
+      const result = await write('/api/nodehost/discover', {integration_id: select.value, addresses: addresses.input.value.trim().split(/\s+/)});
+      if (result.missing.length) toast('Не найдены в истории: ' + result.missing.join(', '));
+      closeModal(); await render();
+    });
+  }));
+  if (!data.resources.length) root.append(el('p', 'Пока нет импортированных VPS.'));
+  for (const item of data.resources) {
+    const card = el('div', '', 'card');
+    card.append(el('h3', item.ipv4), el('p', 'Статус: ' + (item.status === 'discovered' ? 'Найден в истории; не принят под автоматическое управление' : title(item.status))));
+    card.append(button('Проверить SSH из РФ и трёх стран', async () => {
+      const r = await write('/api/nodehost/resources/' + item.source_message_id + '/preflight', {});
+      const labels = {BOOT_WAIT:'Ожидается загрузка сервера', REJECT_HISTORY:'IP в истории блокировок', REJECT_RU_FILTER:'Повторные проверки: SSH недоступен из РФ', RECHECK:'Данных недостаточно — повторите проверку', SSH_READY:'SSH доступен. MTProto ещё не проверен'};
+      toast(labels[r.status] || r.status);
+    }));
+    card.append(button('Проверить ОС и Telemt', async () => {
+      const r = await write('/api/nodehost/resources/' + item.source_message_id + '/inspect', {});
+      toast(r.os + ' ' + r.version + ' · Telemt: ' + (r.active ? 'работает' : r.installed ? 'установлен' : 'не установлен'));
+    }));
+    root.append(card);
+  }
 }

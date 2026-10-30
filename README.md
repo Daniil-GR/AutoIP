@@ -18,6 +18,10 @@
 
 ## Агенты
 
+Подготовка второй схемы — польские VPS через Telegram Node Host:
+[реализованные части, ограничения и команды](docs/nodehost-v2.md).
+Автоматическая замена целого VPS пока не включена.
+
 Мастер «Добавить агента» создаёт одноразовый код на 15 минут и показывает команду. Код вводится локально скрытым запросом `enroll-local`; его не требуется вставлять в командную строку. У агента исходящее HTTPS-соединение. Основной IP и маршруты AutoIP при подключении не меняет. См. [docs/agent-installation.md](docs/agent-installation.md).
 
 В настройках Commander можно сохранить DNS-зону по умолчанию. Она копируется в настройки нового агента при регистрации; смена значения не затрагивает существующих агентов. Полное имя поддомена задаётся отдельно. Эти настройки не выполняют запись в DNS.
@@ -41,7 +45,16 @@ python -m compileall -q commander agent migrations
 node --check commander/static/app.js
 ```
 
-Тесты сами создают временные SQLite БД. Настоящий PostgreSQL проверяется отдельно на пустой БД `autoip_test` через `AUTOIP_TEST_POSTGRES_URL`. Браузер: `playwright install chromium`, затем `python scripts/browser-smoke.py`; он поднимает и удаляет собственный Commander на случайном loopback-порту, не вызывает провайдеров.
+Тесты сами создают временные SQLite БД. Настоящий PostgreSQL проверяется отдельно на пустой БД `autoip_test` через `AUTOIP_TEST_POSTGRES_URL`. Браузерные файлы устанавливаются только в каталог AutoIP:
+
+```sh
+export PLAYWRIGHT_BROWSERS_PATH="$PWD/.local-test/playwright-browsers"
+export PLAYWRIGHT_SKIP_BROWSER_GC=1
+playwright install chromium
+python scripts/browser-smoke.py
+```
+
+Сценарий поднимает и удаляет собственный Commander на случайном loopback-порту, не вызывает провайдеров. Не используйте общий браузерный кэш других проектов.
 
 Обновление v0.1: сначала backup, затем `python -m commander.manage adopt-v01` на копии БД. Обычный старт больше не использует `create_all`.
 

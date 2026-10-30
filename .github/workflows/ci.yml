@@ -16,6 +16,8 @@ jobs:
           --health-cmd "pg_isready -U postgres -d autoip_test"
           --health-interval 5s --health-timeout 3s --health-retries 10
     env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.local-test/playwright-browsers
+      PLAYWRIGHT_SKIP_BROWSER_GC: '1'
       AUTOIP_TEST_POSTGRES_URL: postgresql+psycopg://postgres:isolated-test-password@127.0.0.1:5432/autoip_test
     steps:
       - uses: actions/checkout@v4

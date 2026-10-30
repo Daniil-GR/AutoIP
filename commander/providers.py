@@ -116,6 +116,12 @@ def dns_plan(snapshot, zone, host, old_ip, new_ip):
 
 async def test_connection(kind, credentials):
     try:
+        if kind in ("telemt_profile", "vps_access"):
+            return {
+                "ok": False,
+                "status": "not_tested",
+                "message": "Профиль сохранён зашифрованно. Проверка выбранного VPS выполняется в разделе VPS Node Host",
+            }
         if kind == "mtproto_checker":
             from .mtproto_checker import test_key
 

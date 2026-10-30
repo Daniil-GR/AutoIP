@@ -3,7 +3,7 @@ import re
 import secrets
 import httpx
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -565,6 +565,7 @@ def set_configuration(
         (body.mtproto_integration_id, "mtproto"),
         (body.checker_integration_id, "mtproto_checker"),
         (body.ripe_atlas_integration_id, "ripe_atlas"),
+        (body.vps_profile_integration_id, "telemt_profile"),
     ]:
         integration = db.get(Integration, identifier) if identifier else None
         if identifier and (not integration or integration.kind != kind):
@@ -888,4 +889,135 @@ async def atlas_probe_plan(actor=Depends(admin)):
     except (httpx.HTTPError, ValueError):
         raise HTTPException(
             502, "Не удалось получить актуальное покрытие RIPE Atlas"
+        ) from None
+
+
+class NodeHostDiscovery(BaseModel):
+    integration_id: str
+    addresses: list[str] = Field(min_length=1, max_length=10)
+
+    @field_validator("addresses")
+    @classmethod
+    def public_addresses(cls, addresses):
+        from .nodehost import public_ip
+        from .nodehost import NodeHostError
+
+        try:
+            return [public_ip(value) for value in addresses]
+        except NodeHostError:
+            raise ValueError("Нужны публичные IPv4") from None
+
+
+@app.get("/api/nodehost/resources")
+def nodehost_resources(actor=Depends(admin), db: Session = Depends(get_db)):
+    from .nodehost import resources
+
+    return {"resources": resources(db), "automatic_purchases_enabled": False}
+
+
+@app.post("/api/nodehost/discover")
+async def nodehost_discover(body: NodeHostDiscovery, actor=Depends(admin)):
+    from .nodehost import discover, NodeHostError
+
+    try:
+        result = await discover(body.integration_id, body.addresses)
+    except NodeHostError as error:
+        raise HTTPException(409, str(error)) from None
+    # Credential IDs are internal; use only receipt IDs in the web interface.
+    return {
+        "found": [
+            {k: r[k] for k in ("ipv4", "source_message_id")} for r in result["found"]
+        ],
+        "missing": result["missing"],
+    }
+
+
+@app.post("/api/nodehost/resources/{receipt_id}/inspect")
+async def nodehost_inspect(
+    receipt_id: int, actor=Depends(admin), db: Session = Depends(get_db)
+):
+    from .vps_bootstrap import inspect as inspect_vps
+
+    item = db.get(SystemSetting, "vps-receipt:" + str(receipt_id))
+    if not item:
+        raise HTTPException(404, "VPS не найден")
+    report = await inspect_vps(item.value["credential_id"], allow_first_pin=True)
+    item.value = {
+        **item.value,
+        "inspection": report,
+        "inspected_at": utcnow().isoformat(),
+    }
+    audit(db, actor, "nodehost_inspected", str(receipt_id))
+    db.commit()
+    return report
+
+
+@app.post("/api/nodehost/resources/{receipt_id}/preflight")
+async def nodehost_preflight(
+    receipt_id: int, actor=Depends(admin), db: Session = Depends(get_db)
+):
+    from .vps_preflight import check, assess
+
+    item = db.get(SystemSetting, "vps-receipt:" + str(receipt_id))
+    if not item:
+        raise HTTPException(404, "VPS не найден")
+    before = dict(item.value)
+    rounds = list(before.get("ssh_rounds", []))[-9:]
+    result = assess(
+        db,
+        before["ipv4"],
+        datetime.fromisoformat(before["created_at"]),
+        rounds,
+        utcnow(),
+    )
+    if result["status"] not in ("BOOT_WAIT", "REJECT_HISTORY"):
+        report = await check(before["ipv4"])
+        rounds.append({"checked_at": utcnow().isoformat(), "report": report})
+        result = assess(
+            db,
+            before["ipv4"],
+            datetime.fromisoformat(before["created_at"]),
+            rounds,
+            utcnow(),
+        )
+    # Do not lose a concurrent inspection or other metadata update.
+    db.refresh(item, with_for_update=True)
+    item.value = {**item.value, "ssh_rounds": rounds[-10:], "ssh_preflight": result}
+    audit(db, actor, "nodehost_ssh_preflight", str(receipt_id), status=result["status"])
+    db.commit()
+    return result
+
+
+class NodeHostQuote(BaseModel):
+    integration_id: str
+
+
+@app.post("/api/nodehost/quote")
+async def nodehost_quote(body: NodeHostQuote, actor=Depends(admin)):
+    from .nodehost_orders import prepare
+    from .nodehost import NodeHostError
+
+    try:
+        return await prepare(body.integration_id)
+    except NodeHostError as error:
+        raise HTTPException(409, str(error)) from None
+
+
+class NodeHostOrder(BaseModel):
+    quote_id: str
+    operation_id: str
+    approved: bool = False
+
+
+@app.post("/api/nodehost/order")
+async def nodehost_order(body: NodeHostOrder, actor=Depends(admin)):
+    from .nodehost_orders import purchase
+    from .nodehost import NodeHostError
+
+    try:
+        return await purchase(body.quote_id, body.operation_id, approved=body.approved)
+    except (NodeHostError, ValueError) as error:
+        raise HTTPException(
+            409,
+            str(error) if isinstance(error, NodeHostError) else "Неверный ID операции",
         ) from None

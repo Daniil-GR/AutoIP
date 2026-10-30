@@ -51,7 +51,7 @@ def test_menu_and_shared_services(db, monkeypatch):
     )
     db.add(a)
     db.commit()
-    assert len(menu(db, 1).inline_keyboard) == 8
+    assert len(menu(db, 1).inline_keyboard) == 9
     for kind in [
         "status",
         "agents",

@@ -32,7 +32,7 @@ class MonitorProvider(Protocol):
 class CheckHost:
     name = "check-host"
 
-    async def check(self, host, port, protocol="tcp"):
+    async def check(self, host, port, protocol="tcp", *, foreign_countries=None):
         if protocol not in ("tcp", "https"):
             raise ValueError("Unsupported check protocol")
         if not valid_target(host, port):
@@ -55,6 +55,11 @@ class CheckHost:
                     if not isinstance(info, dict) or not info.get("location"):
                         continue
                     country = str(info["location"][0]).upper()
+                    if country != "RU" and foreign_countries is not None:
+                        if country not in foreign_countries or any(
+                            item["country"] == country for item in foreign.values()
+                        ):
+                            continue
                     pool = ru if country == "RU" else foreign
                     if len(pool) < (5 if country == "RU" else 3):
                         pool[name] = {

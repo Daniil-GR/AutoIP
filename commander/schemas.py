@@ -9,7 +9,8 @@ from .dns_scope import managed_record, managed_zone
 
 class AgentConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    provider: Literal["cherry", "other"] = "cherry"
+    provider: Literal["cherry", "nodehost", "other"] = "cherry"
+    vps_profile_integration_id: str = ""
     region: str = Field(default="", max_length=80)
     management_ip: str = ""
     proxy_ip: str = ""
@@ -86,6 +87,8 @@ class IntegrationInput(BaseModel):
         "ripe_atlas",
         "mtproto",
         "mtproto_checker",
+        "vps_access",
+        "telemt_profile",
     ]
     credentials: dict[str, str] = Field(repr=False)
     metadata: dict = Field(default_factory=dict)
@@ -102,6 +105,25 @@ class IntegrationInput(BaseModel):
             raise ValueError(
                 "Произвольные метаданные интеграции пока не поддерживаются"
             )
+        if self.kind == "telemt_profile":
+            if set(self.credentials) != {"domain", "secret", "ad_tag"}:
+                raise ValueError("Нужны domain, secret и ad_tag")
+            if self.credentials["domain"] != "pl.vetka.rest" or not all(
+                re.fullmatch(r"[a-f0-9]{32}", self.credentials[k])
+                for k in ("secret", "ad_tag")
+            ):
+                raise ValueError("Нужны pl.vetka.rest и профиль из 32 hex-символов")
+            return
+        if self.kind == "vps_access":
+            if set(self.credentials) != {"ipv4", "username", "password"}:
+                raise ValueError("Нужны ipv4, username и password")
+            if (
+                not ipaddress.IPv4Address(self.credentials["ipv4"]).is_global
+                or self.credentials["username"] != "root"
+                or not 1 <= len(self.credentials["password"]) <= 512
+            ):
+                raise ValueError("Неверные данные VPS")
+            return
         if self.kind == "telethon":
             allowed = {"api_id", "api_hash", "phone", "session"}
             if set(self.credentials) - allowed:
