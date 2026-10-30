@@ -28,6 +28,18 @@ def main():
     sponsor = sub.add_parser("sponsor-agent")
     sponsor.add_argument("agent_id")
     sponsor.add_argument("--approve-new-registration", action="store_true")
+    floating = sub.add_parser(
+        "floating-ip-pilot",
+        help="Согласованный пилот одного Floating IP; DNS не меняет",
+    )
+    floating.add_argument("action", choices=["order", "attach", "status"])
+    floating.add_argument("--agent-id")
+    floating.add_argument("--operation-id", required=True)
+    floating.add_argument(
+        "--approved",
+        action="store_true",
+        help="Явное разрешение одного заказа или Attach",
+    )
     bootstrap = sub.add_parser("import-bootstrap")
     bootstrap.add_argument("path")
     key = sub.add_parser("vault-init")
@@ -46,7 +58,31 @@ def main():
         ],
     )
     args = parser.parse_args()
-    if args.command == "telethon-login":
+    if args.command == "floating-ip-pilot":
+        import asyncio
+        import json
+        from .floating_pilot import PilotError, purchase_one, attach_one, operation_key
+        from .database import SystemSetting
+
+        try:
+            if args.action == "order":
+                result = asyncio.run(
+                    purchase_one(
+                        args.agent_id, args.operation_id, approved=args.approved
+                    )
+                )
+            elif args.action == "attach":
+                result = asyncio.run(
+                    attach_one(args.operation_id, approved=args.approved)
+                )
+            else:
+                with SessionLocal() as db:
+                    row = db.get(SystemSetting, operation_key(args.operation_id))
+                    result = row.value if row else {"status": "NOT_FOUND"}
+            print(json.dumps(result, ensure_ascii=False))
+        except (PilotError, ValueError) as error:
+            raise SystemExit(str(error)) from None
+    elif args.command == "telethon-login":
         import asyncio
         import os
         from .sponsorship import ManualRequired, authorize_local
