@@ -31,10 +31,12 @@ node's A record. Enforce `commander/dns_scope.py` at every future DNS mutation
 boundary; settings in the web panel must not expand this scope. DNS writes
 still require the owner's separate approval and a verified safe adapter.
 
-## Sponsorship evaluation
+## Sponsorship feature frozen by owner
 
-The owner is testing whether a stable hostname can keep one registration and
-ad_tag across IPv4 changes. Keep sponsorship manual until the owner chooses the
-method. Do not automatically re-register proxies or rotate tags after an IP
-change. The live pilot's existing registration/tag must be preserved during this
-evaluation; Agent ad_tag write permission was closed again after the pilot.
+As of 2026-10-30, development and activation of automatic MTProxybot registration
+and ad_tag replacement are frozen. IP recovery must preserve the current node's
+ad_tag and must not require a Telegram registration step. Do not change the live
+tag, registration, or Telethon session. Agent tag-write permissions remain closed.
+Retain existing adapter code for reference; resume this feature only at the owner's
+explicit request. The owner chose stable hostname/port plus tag reuse as the
+operating approach; cross-IP sponsorship behavior still needs a real approved test.
