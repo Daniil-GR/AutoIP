@@ -447,6 +447,17 @@ def exclusive():
                 conn.execute(text("SELECT pg_advisory_unlock(184042, 1)"))
 
 
+async def protocol_verification(agent_id, host, port):
+    """Retry one contradictory provider response, never hide a valid failure."""
+    from .monitoring import checker_report
+
+    for attempt in range(2):
+        report = await checker_report(agent_id, host, port)
+        if report.get("error") != "inconsistent_response" or attempt:
+            return report
+        await asyncio.sleep(1)
+
+
 async def step(identifier):
     from .services import online, proxy_address
     from .monitor import verdict
@@ -601,10 +612,8 @@ async def step(identifier):
                 next_at=(utcnow() + timedelta(seconds=30)).isoformat(),
             )
             return
-        direct, domain = await asyncio.gather(
-            checker_report(s["agent_id"], s["new"], s["port"]),
-            checker_report(s["agent_id"], s["host"], s["port"]),
-        )
+        direct = await protocol_verification(s["agent_id"], s["new"], s["port"])
+        domain = await protocol_verification(s["agent_id"], s["host"], s["port"])
         if not (direct.get("mtproto_verified") and domain.get("mtproto_verified")):
             save(
                 identifier,

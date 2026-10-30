@@ -625,3 +625,29 @@ def test_human_protocol_block_runs_final_check_and_cutover(db, env, monkeypatch)
     asyncio.run(rr.step(r.id))
     assert rr.load(r.id)["stage"] == "CANDIDATE_CHECK"
     assert not provider.calls
+
+
+@pytest.mark.parametrize(
+    "first,expected_calls",
+    [
+        ({"error": "inconsistent_response"}, 2),
+        ({"provider_status": "RKN_BLOCK"}, 1),
+        ({"provider_status": "DATA_CUT"}, 1),
+        ({"error": "local_rate_limit"}, 1),
+    ],
+)
+def test_verification_retries_only_contradictory_response(
+    monkeypatch, first, expected_calls
+):
+    from commander import monitoring
+
+    calls = []
+
+    async def check(*args):
+        calls.append(args)
+        return first if len(calls) == 1 else {"mtproto_verified": True}
+
+    monkeypatch.setattr(monitoring, "checker_report", check)
+    result = asyncio.run(rr.protocol_verification("agent", NEW, 9443))
+    assert len(calls) == expected_calls
+    assert result == ({"mtproto_verified": True} if expected_calls == 2 else first)
