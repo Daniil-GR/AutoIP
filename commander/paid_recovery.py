@@ -674,8 +674,16 @@ async def step(identifier):
         if network_job(identifier, s, "commit", s["resource_id"]):
             save(identifier, "DNS_HANDOFF")
     elif stage == "DNS_HANDOFF":
+        from .monitoring import collect_agent
+
+        # Candidate search may outlast the original incident evidence's TTL.
+        evidence = await collect_agent(s["agent_id"], s["host"], s["port"], s["old"])
         with SessionLocal() as db:
             a = require_context(db, s)
+            incident = db.get(Incident, s["incident_id"])
+            if not authorization(incident, evidence):
+                raise PilotError("Свежая проверка перед DNS не подтверждает блокировку")
+            incident.evidence = evidence
             row = db.scalar(
                 select(FloatingIP).where(FloatingIP.resource_id == s["resource_id"])
             )
@@ -719,6 +727,7 @@ async def step(identifier):
             paid_row.value = {
                 **paid_row.value,
                 "stage": "HANDOFF",
+                "handoff_evidence": evidence,
                 "updated_at": utcnow().isoformat(),
             }
             db.commit()

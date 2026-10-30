@@ -138,6 +138,28 @@ def test_uncertain_purchase_never_reorders(db, paid_env, monkeypatch):
     assert calls == [1]
 
 
+def test_dns_handoff_refreshes_expired_incident_evidence(db, paid_env, monkeypatch):
+    from commander import monitoring
+
+    a, _ = paid_env
+    r = start(db, a)
+    incident = db.get(Incident, r.incident_id)
+    old = human_protocol_evidence()
+    old["reports"][0]["checked_at"] = (utcnow() - timedelta(minutes=20)).isoformat()
+    incident.evidence = old
+    db.commit()
+    paid.save(r.id, "DNS_HANDOFF", resource_id=RESOURCE, new=NEW)
+
+    async def collect(*args):
+        return human_protocol_evidence()
+
+    monkeypatch.setattr(monitoring, "collect_agent", collect)
+    asyncio.run(paid.step(r.id))
+    assert paid.load(r.id)["stage"] == "HANDOFF"
+    db.expire_all()
+    assert paid.protocol_block(db.get(Incident, r.incident_id).evidence)
+
+
 def test_known_history_is_not_attached(db, paid_env, monkeypatch):
     a, _ = paid_env
     r = start(db, a)
