@@ -147,6 +147,88 @@ def test_blocked_reissue_is_recorded_but_never_attached(db, setup):
     assert db.query(FloatingIP).count() == 2
 
 
+def test_same_resource_uuid_reissued_after_release_retains_block_history(db, setup):
+    db.add(
+        FloatingIP(
+            agent_id="node",
+            integration_id="cherry",
+            resource_id=IP_ID,
+            ipv4="1.1.1.1",
+            status="blocked",
+            managed=True,
+            released_at=pilot.utcnow(),
+        )
+    )
+    db.commit()
+    operation = str(uuid4())
+    result = purchase(operation)
+    assert result["status"] == "REJECTED_HISTORY" and result["seen_before"]
+    db.expire_all()
+    row = db.scalar(select(FloatingIP))
+    assert row.status == "rejected_history" and row.released_at is None
+    assert db.query(FloatingIP).count() == 1
+    assert pilot.known_blocked(db, "1.1.1.1")
+    with pytest.raises(pilot.PilotError):
+        asyncio.run(pilot.attach_one(operation, approved=True))
+    assert not any(c[0] == "PUT" for c in setup.calls)
+
+
+def test_saved_successful_post_resumes_after_recording_crash_without_repurchase(
+    db, setup, monkeypatch
+):
+    operation = str(uuid4())
+    original = pilot.record_allocation
+
+    def crash(_):
+        raise RuntimeError("recording interrupted")
+
+    monkeypatch.setattr(pilot, "record_allocation", crash)
+    with pytest.raises(RuntimeError):
+        purchase(operation)
+    monkeypatch.setattr(pilot, "record_allocation", original)
+    assert purchase(operation)["status"] == "ALLOCATED"
+    assert purchase(operation)["status"] == "ALLOCATED"
+    assert sum(c[0] == "POST" for c in setup.calls) == 1
+    assert db.query(FloatingIP).count() == 1
+
+
+@pytest.mark.parametrize(
+    "conflict", ["attached", "missing", "unmanaged", "other_agent"]
+)
+def test_saved_allocation_reconciliation_fails_closed(db, setup, monkeypatch, conflict):
+    operation = str(uuid4())
+    original = pilot.record_allocation
+
+    def crash(_):
+        raise RuntimeError("recording interrupted")
+
+    monkeypatch.setattr(pilot, "record_allocation", crash)
+    with pytest.raises(RuntimeError):
+        purchase(operation)
+    monkeypatch.setattr(pilot, "record_allocation", original)
+    if conflict == "attached":
+        setup.target = 99
+    elif conflict == "missing":
+        setup.allocated = False
+    else:
+        db.add(
+            FloatingIP(
+                agent_id="node" if conflict == "unmanaged" else "other",
+                integration_id="cherry",
+                resource_id=IP_ID,
+                ipv4="1.1.1.1",
+                managed=conflict != "unmanaged",
+                status="candidate",
+                released_at=pilot.utcnow(),
+            )
+        )
+        db.commit()
+    with pytest.raises(pilot.PilotError):
+        purchase(operation)
+    assert sum(c[0] == "POST" for c in setup.calls) == 1
+    assert not any(c[0] == "PUT" for c in setup.calls)
+
+
 def test_attach_routes_to_primary_uuid_and_reads_back_without_ordering_again(setup):
     operation = str(uuid4())
     purchase(operation)

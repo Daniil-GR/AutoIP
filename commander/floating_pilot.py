@@ -175,6 +175,80 @@ def context(db, agent_id):
     return agent, account, cfg, CherryPilotAPI(decrypt(account)["api_key"])
 
 
+def record_allocation(key):
+    """Finish a saved POST atomically, retaining history if Cherry reuses its UUID."""
+    with SessionLocal() as db:
+        operation = db.scalar(
+            select(SystemSetting).where(SystemSetting.key == key).with_for_update()
+        )
+        state = dict(operation.value)
+        if state["status"] != "ALLOCATED_UNCHECKED":
+            return state
+        blocked = known_blocked(db, state["ipv4"])
+        seen = (
+            db.scalar(
+                select(FloatingIP.id).where(FloatingIP.ipv4 == state["ipv4"]).limit(1)
+            )
+            is not None
+        )
+        owned = db.scalar(
+            select(FloatingIP)
+            .where(FloatingIP.resource_id == state["resource_id"])
+            .with_for_update()
+        )
+        if owned:
+            if (
+                owned.agent_id != state["agent_id"]
+                or owned.integration_id != state["integration_id"]
+                or owned.ipv4 != state["ipv4"]
+                or not owned.managed
+                or (
+                    not owned.released_at
+                    and owned.status not in ("candidate", "rejected_history")
+                )
+            ):
+                raise PilotError("Повторный ресурс не принадлежит этой операции")
+            audit(
+                db,
+                "commander",
+                "floating_resource_reissued",
+                owned.resource_id,
+                previous_status=owned.status,
+                previous_released_at=owned.released_at.isoformat()
+                if owned.released_at
+                else None,
+                operation_id=state["operation_id"],
+            )
+            owned.released_at = None
+        else:
+            owned = FloatingIP(
+                agent_id=state["agent_id"],
+                integration_id=state["integration_id"],
+                resource_id=state["resource_id"],
+                ipv4=state["ipv4"],
+                managed=True,
+            )
+            db.add(owned)
+        owned.status = "rejected_history" if blocked else "candidate"
+        operation.value = {
+            **state,
+            "status": "REJECTED_HISTORY" if blocked else "ALLOCATED",
+            "seen_before": seen,
+            "known_blocked": blocked,
+            "updated_at": utcnow().isoformat(),
+        }
+        audit(
+            db,
+            "commander",
+            "floating_allocation_recorded",
+            state["agent_id"],
+            operation_id=state["operation_id"],
+            known_blocked=blocked,
+        )
+        db.commit()
+        return dict(operation.value)
+
+
 async def purchase_one(agent_id, operation_id, *, approved=False):
     if not approved:
         raise PilotError("Нужно отдельное подтверждение покупки одного Floating IP")
@@ -184,10 +258,38 @@ async def purchase_one(agent_id, operation_id, *, approved=False):
         if previous:
             if previous.value.get("agent_id") != agent_id:
                 raise PilotError("Операция принадлежит другому агенту")
-            return dict(previous.value)
+            saved = dict(previous.value)
+            if saved.get("status") != "ALLOCATED_UNCHECKED":
+                return saved
+        else:
+            saved = None
         agent, account, cfg, api = context(db, agent_id)
         project, region = str(cfg["cherry_project_id"]), cfg["region"]
         integration_id = account.id
+    if saved:
+        if (
+            saved.get("integration_id") != integration_id
+            or saved.get("project_id") != project
+            or saved.get("region") != region
+        ):
+            raise PilotError("Конфигурация незавершённого заказа изменилась")
+        resources = await api.request("GET", f"/projects/{project}/ips")
+        matches = (
+            [r for r in resources if str(r.get("id")) == saved["resource_id"]]
+            if isinstance(resources, list)
+            else []
+        )
+        if (
+            len(matches) != 1
+            or resource_summary(matches[0])["ipv4"] != saved["ipv4"]
+            or relation_id(
+                matches[0].get("targeted_to") or matches[0].get("assigned_to")
+            )
+        ):
+            raise PilotError(
+                "Незавершённый кандидат не подтверждён как свободный ресурс проекта"
+            )
+        return record_allocation(key)
     before = await api.request("GET", f"/projects/{project}/ips")
     if not isinstance(before, list):
         raise PilotError("Не удалось получить исходный список ресурсов")
@@ -238,31 +340,7 @@ async def purchase_one(agent_id, operation_id, *, approved=False):
             provider_status=error.provider_status,
         )
         raise
-    with SessionLocal() as db:
-        blocked = known_blocked(db, summary["ipv4"])
-        seen = (
-            db.scalar(
-                select(FloatingIP.id).where(FloatingIP.ipv4 == summary["ipv4"]).limit(1)
-            )
-            is not None
-        )
-        db.add(
-            FloatingIP(
-                agent_id=agent_id,
-                integration_id=integration_id,
-                resource_id=summary["resource_id"],
-                ipv4=summary["ipv4"],
-                managed=True,
-                status="rejected_history" if blocked else "candidate",
-            )
-        )
-        db.commit()
-    return save_state(
-        key,
-        "REJECTED_HISTORY" if blocked else "ALLOCATED",
-        seen_before=seen,
-        known_blocked=blocked,
-    )
+    return record_allocation(key)
 
 
 async def attach_one(operation_id, *, approved=False):
