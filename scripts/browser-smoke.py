@@ -186,7 +186,9 @@ with SessionLocal() as db:
                         lambda r: r.url.endswith("/api/enrollments")
                         and r.request.method == "POST"
                     ) as created:
-                        page.get_by_role("button", name="Создать код", exact=True).click()
+                        page.get_by_role(
+                            "button", name="Создать код", exact=True
+                        ).click()
                     assert created.value.json()["proxy_mode"] == "mtproto_faketls"
                     page.locator("#close").click()
                     page.locator("#nav-dashboard").click()
