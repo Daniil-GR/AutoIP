@@ -38,7 +38,12 @@ def exact_data(message, pattern):
 
 
 def quote_data(message, *, location="Poland", ram_gb=3):
-    if (location, ram_gb) not in (("Poland", 3), ("Germany", 2), ("Finland", 2)):
+    if (location, ram_gb) not in (
+        ("Poland", 3),
+        ("Germany", 2),
+        ("Finland", 2),
+        ("Netherlands", 2),
+    ):
         raise NodeHostError("Конфигурация страны не согласована")
     speed = 1 if location in ("Germany", "Finland") else 10
     text = message.raw_text
@@ -155,9 +160,9 @@ async def prepare(telegram_id, *, location=None):
     """Browse only. The final buy callback is not sent by this function."""
     with SessionLocal() as db:
         location = selected_location(db, telegram_id, location)
-    if location not in ("Poland", "Germany", "Finland"):
+    if location not in ("Poland", "Germany", "Finland", "Netherlands"):
         raise NodeHostError("Локация Node Host не согласована")
-    ram_gb = 2 if location in ("Germany", "Finland") else 3
+    ram_gb = 3 if location == "Poland" else 2
     speed = 1 if location in ("Germany", "Finland") else 10
     async with session(telegram_id) as client:
         m = await root_menu(client)
@@ -272,7 +277,7 @@ async def purchase(quote_id, operation_id, *, approved=False):
                 prior_quote = db.get(
                     SystemSetting, "nh-quote:" + str(op.value.get("target", ""))
                 )
-                if (
+                if op.value.get("telegram_id") == quote["telegram_id"] or (
                     prior_quote
                     and prior_quote.value.get("telegram_id") == quote["telegram_id"]
                 ):

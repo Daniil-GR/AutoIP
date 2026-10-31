@@ -81,3 +81,9 @@ keep this report distinct from a verified provider deletion/refund.
 Finland was subsequently selected by the owner because German purchases were
 temporarily disabled. Current candidate configuration remains 1 vCPU / 2 GB /
 25 GB, Ubuntu 24.04, one day, 1 Gbps. Preserve the existing hostname/profile.
+
+The owner then explicitly authorized deleting the rejected Finnish pilot VPS
+and buying Netherlands with 1 vCPU / 2 GB / 25 GB, Ubuntu 24.04, one day.
+Netherlands is offered under the 10 Gbps menu. Keep the existing hostname,
+secrets and the separate Polish source VPS. Record actual deletion/refund
+outcomes; a financial or destructive callback must never be blindly repeated.

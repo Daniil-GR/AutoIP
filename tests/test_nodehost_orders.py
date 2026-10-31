@@ -230,14 +230,16 @@ def test_only_unchanged_unpaid_speed_menu_can_retry(monkeypatch, changed):
     assert len(calls) == (1 if changed else 2)
 
 
-@pytest.mark.parametrize("location", ["Germany", "Finland"])
+@pytest.mark.parametrize("location", ["Germany", "Finland", "Netherlands"])
 def test_german_quote_binds_country_and_two_gb_memory(location):
     text = (
         TEXT.replace("RAM: 3", "RAM: 2")
         .replace("Poland", location)
-        .replace("10GBps", "1GBps")
+        .replace("10GBps", "10GBps" if location == "Netherlands" else "1GBps")
     )
-    callback = DATA.replace("Poland", location).replace(";10;", ";1;")
+    callback = DATA.replace("Poland", location).replace(
+        ";10;", ";10;" if location == "Netherlands" else ";1;"
+    )
     quote = orders.quote_data(message(text, callback), location=location, ram_gb=2)
     assert (quote["location"], quote["cpu"], quote["ram_gb"], quote["disk_gb"]) == (
         location,
@@ -257,7 +259,7 @@ def test_german_quote_binds_country_and_two_gb_memory(location):
         orders.quote_data(message(text, DATA), location=location, ram_gb=2)
 
 
-@pytest.mark.parametrize("location", ["Germany", "Finland"])
+@pytest.mark.parametrize("location", ["Germany", "Finland", "Netherlands"])
 def test_german_purchase_rechecks_configuration_and_records_country(
     db, purchase_setup, location
 ):
@@ -265,9 +267,11 @@ def test_german_purchase_rechecks_configuration_and_records_country(
     m.raw_text = (
         TEXT.replace("RAM: 3", "RAM: 2")
         .replace("Poland", location)
-        .replace("10GBps", "1GBps")
+        .replace("10GBps", "10GBps" if location == "Netherlands" else "1GBps")
     )
-    callback = DATA.replace("Poland", location).replace(";10;", ";1;")
+    callback = DATA.replace("Poland", location).replace(
+        ";10;", ";10;" if location == "Netherlands" else ";1;"
+    )
     m.buttons = [[SimpleNamespace(data=callback.encode())]]
     q = db.get(SystemSetting, "nh-quote:" + quote_id)
     q.value = {**q.value, **orders.quote_data(m, location=location, ram_gb=2)}
@@ -356,3 +360,34 @@ def test_fallback_stays_in_germany_during_same_account_search(db):
     db.commit()
     assert orders.selected_location(db, "telegram") == "Germany"
     assert orders.selected_location(db, "other-account") == "Poland"
+
+
+@pytest.mark.parametrize("same_account", [True, False])
+def test_unresolved_deletion_blocks_orders_only_for_its_account(
+    db, purchase_setup, same_account
+):
+    quote_id, client, _ = purchase_setup
+    db.add(
+        SystemSetting(
+            key="nodehost-op:" + str(uuid4()),
+            value={
+                "status": "SUBMITTING",
+                "action": "delete",
+                "target": "provider-server-id",
+                "telegram_id": "telegram" if same_account else "other-account",
+            },
+        )
+    )
+    db.commit()
+    if same_account:
+        with pytest.raises(nodehost.NodeHostError, match="неопределённый заказ"):
+            asyncio.run(orders.purchase(quote_id, str(uuid4()), approved=True))
+        assert client.clicks == 0
+    else:
+        assert (
+            asyncio.run(orders.purchase(quote_id, str(uuid4()), approved=True))[
+                "status"
+            ]
+            == "ALLOCATED"
+        )
+        assert client.clicks == 1
