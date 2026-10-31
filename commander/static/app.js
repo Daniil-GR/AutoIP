@@ -28,6 +28,9 @@ const pages = {
   settings: ["⚙", "Настройки", "Безопасность и готовность Commander"],
 };
 const statuses = {
+  cdn_web_reachable: "HTTPS через CDN: доступ из РФ обнаружен",
+  cdn_web_suspected: "Возможна недоступность CDN из РФ — требуется проверка",
+  cdn_web_unknown: "Недостаточно данных о доступности CDN",
   DECLINED_FUNDS: "Недостаточно средств у хостера",
   vps_access: "Доступ к VPS",
   telemt_profile: "Профиль Telemt",
@@ -322,12 +325,12 @@ async function dashboard(root) {
     checks.slice(-60).forEach((c, i, all) => {
       const rect = document.createElementNS(ns, "rect");
       rect.setAttribute("x", String((i * 600) / all.length));
-      rect.setAttribute("y", c.result === "reachable" ? "20" : "85");
+      rect.setAttribute("y", ["reachable", "cdn_web_reachable"].includes(c.result) ? "20" : "85");
       rect.setAttribute("width", String(Math.max(2, 580 / all.length)));
-      rect.setAttribute("height", c.result === "reachable" ? "110" : "45");
+      rect.setAttribute("height", ["reachable", "cdn_web_reachable"].includes(c.result) ? "110" : "45");
       rect.setAttribute(
         "fill",
-        c.result === "reachable"
+        ["reachable", "cdn_web_reachable"].includes(c.result)
           ? "#67dab5"
           : c.result === "suspected"
             ? "#fb9ba4"
@@ -506,6 +509,7 @@ function saveButton(fn, label = "Сохранить") {
   };
 }
 const readinessLabels = {
+  direct_dns_mode: "Прямое DNS-переключение разрешено выбранным режимом",
   network_helper: "Сетевой помощник ноды проверен",
   stable_public_host: "Клиентский домен или исходный IP согласованы с Telemt",
   reserve_selected: "Выбран управляемый резерв",
@@ -556,6 +560,7 @@ async function editAgent(a) {
   const schema = [
     ["provider", "Провайдер"],
     ["proxy_mode", "Режим прокси"],
+    ["monitoring_mode", "Мониторинг"],
     ["region", "Регион"],
     ["sni_domain", "SNI-домен Telemt"],
     ["management_ip", "Постоянный Management IPv4"],
@@ -585,7 +590,15 @@ async function editAgent(a) {
   const inputs = {};
   for (const [key, label] of schema) {
     let f;
-    if (key === "proxy_mode") {
+    if (key === "monitoring_mode") {
+      const wrap = el("div", "", "field"), input = el("select");
+      input.setAttribute("aria-label", label);
+      for (const [v, text] of [["direct_mtproto", "Прямое подключение — MTProto Checker и Check-Host"], ["cdn_web", "WEB через CDN — Check-Host и RIPE Atlas, без автоматической смены IP"]]) {
+        const option = el("option", text); option.value = v; input.append(option);
+      }
+      input.value = config.monitoring_mode || "direct_mtproto";
+      wrap.append(el("label", label), input); f = {wrap, input};
+    } else if (key === "proxy_mode") {
       f = proxyModeField(config.proxy_mode || "web_mtproto");
       f.input.disabled = !!a.facts.config_found || a.facts.telemt_service === "active";
     } else if (key.endsWith("integration_id") || key === "provider") {
@@ -728,6 +741,7 @@ async function monitoring(root) {
   root.append(coverage.box);
   for (const a of state.agents) {
     const p = panel(a.name + " · " + (a.public_host || "домен не определён"));
+    if (a.configuration.monitoring_mode === "cdn_web") p.body.append(el("p", "WEB через CDN: MTProto Checker не используется. Проверки HTTPS/TLS не подтверждают передачу данных прокси. RIPE Atlas проверяет один выбранный адрес CDN не чаще раза в час. Автоматическая смена origin и DNS выключена.", "note"));
     p.body.append(button("Новая проверка из РФ", () => queueCheck(a.id)));
     const checks = await api("/api/agents/" + a.id + "/checks");
     const list = el("ul", "", "list");
@@ -767,7 +781,7 @@ async function monitoring(root) {
         item.append(
           el(
             "div",
-            `${o.source} · ${o.scope === "web-endpoint" ? "Веб HTTPS" : o.protocol === "mtproto" ? "MTProto" : "MTProto TCP"} · ${o.country === "EXTERNAL" ? "Внешняя точка" : o.country} · ${o.asn || "ASN неизвестен"} · ${o.target || ""} → ${title(o.state)}${o.protocol === "mtproto" ? ` · хендшейк: ${boolLabel(o.handshake)} · данные: ${boolLabel(o.data)} · RTT: ${o.latency_ms ?? "—"} мс` : ""}`,
+            `${o.source} · ${["web-endpoint", "cdn-web-endpoint"].includes(o.scope) ? "Веб HTTPS" : o.protocol === "mtproto" ? "MTProto" : "MTProto TCP"} · ${o.country === "EXTERNAL" ? "Внешняя точка" : o.country} · ${o.asn || "ASN неизвестен"} · ${o.target || ""} → ${title(o.state)}${o.protocol === "mtproto" ? ` · хендшейк: ${boolLabel(o.handshake)} · данные: ${boolLabel(o.data)} · RTT: ${o.latency_ms ?? "—"} мс` : ""}`,
             "mono",
           ),
         );

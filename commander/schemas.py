@@ -12,6 +12,7 @@ class AgentConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid")
     provider: Literal["cherry", "nodehost", "other"] = "cherry"
     proxy_mode: ProxyMode = DEFAULT_MODE
+    monitoring_mode: Literal["direct_mtproto", "cdn_web"] = "direct_mtproto"
     vps_profile_integration_id: str = ""
     region: str = Field(default="", max_length=80)
     management_ip: str = ""
@@ -41,6 +42,8 @@ class AgentConfiguration(BaseModel):
 
     @model_validator(mode="after")
     def protocol_settings(self):
+        if self.monitoring_mode == "cdn_web" and self.proxy_mode == FAKETLS_MODE:
+            raise ValueError("Обычный HTTP CDN не поддерживает MTProto FakeTLS")
         if self.proxy_mode == FAKETLS_MODE:
             if self.web_proxy_host:
                 raise ValueError("В режиме MTProto FakeTLS нет веб-прокси")

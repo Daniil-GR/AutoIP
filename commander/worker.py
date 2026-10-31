@@ -62,6 +62,9 @@ async def tick():
             agent.proxy_port,
         )
         observed_ip = proxy_address(agent)
+        monitoring_mode = (agent.configuration or {}).get(
+            "monitoring_mode", "direct_mtproto"
+        )
         kind = task.kind
         db.commit()
     try:
@@ -76,7 +79,12 @@ async def tick():
                 select(ControlTask).where(ControlTask.id == task_id).with_for_update()
             )
             agent = db.get(Agent, agent_id)
-            if observed_ip != proxy_address(agent) or port != agent.proxy_port:
+            if (
+                observed_ip != proxy_address(agent)
+                or port != agent.proxy_port
+                or monitoring_mode
+                != (agent.configuration or {}).get("monitoring_mode", "direct_mtproto")
+            ):
                 task.status, task.result = (
                     "failed",
                     {"error": "IP или порт изменился во время проверки"},

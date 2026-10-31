@@ -225,6 +225,25 @@ def record_evidence(db, agent_id, evidence, result, incident_id=None):
     agent = require_agent(db, agent_id, lock=True)
     db.add(Check(agent_id=agent_id, result=result, details=evidence))
     record_monitor_health(db, agent, evidence)
+    if evidence.get("monitoring_mode") == "cdn_web":
+        # CDN endpoint evidence must never enter direct-IP recovery decisions.
+        key = "cdn-health:" + agent_id
+        prior = db.get(SystemSetting, key)
+        if result == "cdn_web_suspected" and (
+            not prior or prior.value.get("result") != result
+        ):
+            db.add(
+                Notification(
+                    topic="cdn_monitor",
+                    target=agent_id,
+                    text=f"{agent.name}: HTTPS через CDN недоступен из нескольких проверенных сетей РФ при доступности снаружи. Требуется проверка WEB-прокси; смена IP не запускается.",
+                )
+            )
+        if prior:
+            prior.value = {"result": result}
+        else:
+            db.add(SystemSetting(key=key, value={"result": result}))
+        return
     record_protocol_health(db, agent, evidence, result)
     active = db.scalar(
         select(Incident)
@@ -527,16 +546,25 @@ def request_sni_check(db, agent_id, integration_id, actor):
     if agent.revoked:
         raise HTTPException(409, "Агент отозван")
     integration = db.get(Integration, integration_id)
+    config = agent.configuration or {}
+    cdn = config.get("monitoring_mode") == "cdn_web"
     host = (
         (agent.configuration or {}).get("sni_domain")
         or agent.facts.get("tls_domain")
         or ""
     )
+    if cdn:
+        host = (
+            config.get("web_proxy_host")
+            or config.get("dns_record")
+            or agent.public_host
+            or ""
+        )
     if (
         not integration
         or integration.kind != "ripe_atlas"
         or not PUBLIC_HOST.fullmatch(host)
-        or not proxy_address(agent)
+        or (not cdn and not proxy_address(agent))
     ):
         raise HTTPException(
             422, "Укажите RIPE Atlas интеграцию, SNI-домен и IPv4 прокси"
@@ -550,6 +578,25 @@ def request_sni_check(db, agent_id, integration_id, actor):
     )
     if existing:
         return existing
+    address = proxy_address(agent)
+    if cdn:
+        import socket
+        import ipaddress
+
+        try:
+            addresses = {
+                r[4][0]
+                for r in socket.getaddrinfo(
+                    host, 443, family=socket.AF_INET, type=socket.SOCK_STREAM
+                )
+            }
+            if not addresses or not all(
+                ipaddress.IPv4Address(a).is_global for a in addresses
+            ):
+                raise ValueError()
+            address = sorted(addresses)[0]
+        except (OSError, ValueError):
+            raise HTTPException(422, "Не определён публичный IPv4 CDN") from None
     task = ControlTask(
         agent_id=agent_id,
         kind="sni",
@@ -557,8 +604,9 @@ def request_sni_check(db, agent_id, integration_id, actor):
         payload={
             "integration_id": integration.id,
             "host": host,
-            "target_ip": proxy_address(agent),
-            "port": agent.proxy_port,
+            "target_ip": address,
+            "port": 443 if cdn else agent.proxy_port,
+            "monitoring_mode": "cdn_web" if cdn else "direct_mtproto",
         },
     )
     db.add(task)

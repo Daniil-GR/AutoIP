@@ -194,6 +194,31 @@ async def collect(host, port, ip=""):
 
 
 def verdict(evidence, telemt_ok, fresh):
+    if evidence.get("monitoring_mode") == "cdn_web":
+        observations = evidence.get("observations", [])
+        ru = [o for o in observations if o.get("country") == "RU"]
+        if any(o.get("state") == "reachable" for o in ru):
+            return "cdn_web_reachable"
+        if (
+            len(
+                {
+                    o.get("asn")
+                    for o in ru
+                    if o.get("asn") and o.get("state") == "failed"
+                }
+            )
+            >= 2
+            and len(
+                {
+                    o.get("country")
+                    for o in observations
+                    if o.get("country") != "RU" and o.get("state") == "reachable"
+                }
+            )
+            >= 3
+        ):
+            return "cdn_web_suspected"
+        return "cdn_web_unknown"
     protocol = next(
         (
             r.get("provider_status")

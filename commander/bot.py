@@ -200,6 +200,9 @@ def agent_view(db, user_id, agent_id, mode):
             "proxy_degraded": "прокси недоступен или деградировал",
             "local_fault": "проблема агента или Telemt",
             "unknown": "недостаточно данных",
+            "cdn_web_reachable": "HTTPS CDN: доступ из РФ обнаружен; данные прокси не проверены",
+            "cdn_web_suspected": "возможна недоступность HTTPS CDN из РФ",
+            "cdn_web_unknown": "недостаточно данных о CDN",
         }.get(check.result, check.result)
         if check
         else "нет проверок"
@@ -225,6 +228,20 @@ def agent_view(db, user_id, agent_id, mode):
         if sni
         else "нет проверок"
     )
+    cdn = config.get("monitoring_mode") == "cdn_web"
+    if cdn and sni and (sni.details or {}).get("scope") != "cdn-edge-tls-sni":
+        sni_state = "проверок CDN ещё нет"
+    protocol_state = (
+        "не используется для WEB через CDN"
+        if cdn
+        else status_label(evidence.get("mtproto_status", "UNKNOWN"))
+    )
+    client_host = (
+        config.get("web_proxy_host") or config.get("dns_record") or agent.public_host
+        if cdn
+        else agent.public_host
+    )
+    client_port = 443 if cdn else agent.proxy_port
     from .reserve_recovery import reserve_readiness
 
     reserve = reserve_readiness(db, agent)
@@ -244,14 +261,14 @@ def agent_view(db, user_id, agent_id, mode):
         else "ручной безопасный режим"
     )
     text = (
-        f"🖥 {agent.name}\n{agent.public_host or 'Домен не определён'}:{agent.proxy_port}\n"
+        f"🖥 {agent.name}\n{client_host or 'Домен не определён'}:{client_port}\n"
         f"DNS: {config.get('dns_record') or 'не задан'}\n"
         f"Floating IP: {config.get('floating_ip') or 'не настроен'}\n"
         f"Исходный IPv4 прокси: {config.get('proxy_ip') or 'не указан'}\n"
         f"Связь: {'онлайн' if online(agent) else 'нет heartbeat'}\n"
         f"Telemt: {agent.facts.get('telemt_service', 'неизвестно')}\n"
         f"Мониторинг: {monitor_state}\n"
-        f"MTProto: {status_label(evidence.get('mtproto_status', 'UNKNOWN'))}\n"
+        f"MTProto Checker: {protocol_state}\n"
         f"Веб-прокси: {web_state}\n"
         f"SNI РФ / зарубежье: {sni_state}\n"
         f"Спонсорство: {sponsorship_label(sponsor.status if sponsor else None)}\n"
@@ -335,7 +352,7 @@ def dispatch_action(db, user_id, item):
         from .paid_recovery import enabled_count
 
         paid_count = enabled_count(db)
-        text = f"📊 Всего агентов: {len(agents)}\nОнлайн: {count}\nОфлайн: {len(agents) - count}\nИнтервал проверок: {interval} сек.\nОсновной: MTProto Checker; подтверждение: Check-Host. RIPE Atlas — дополнительно.\nАвтопокупки разрешены для агентов: {paid_count}."
+        text = f"📊 Всего агентов: {len(agents)}\nОнлайн: {count}\nОфлайн: {len(agents) - count}\nИнтервал проверок: {interval} сек.\nИсточники задаются для каждой ноды. WEB через CDN: Check-Host и RIPE Atlas; прямой MTProto: MTProto Checker и Check-Host.\nАвтопокупки разрешены для агентов: {paid_count}."
     elif action in ("agents", "checks", "recovery", "automation"):
         text = "Выберите агента"
         markup = agent_buttons(db, user_id, action)

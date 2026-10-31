@@ -61,6 +61,7 @@ def reserve_readiness(db, agent):
         for a in link.get("addresses", [])
     }
     checks = {
+        "direct_dns_mode": cfg.get("monitoring_mode") != "cdn_web",
         "reserve_selected": bool(
             candidate
             and candidate.agent_id == agent.id
@@ -488,7 +489,11 @@ async def step(identifier):
         i = db.get(Incident, s["incident_id"])
         cfg = a.configuration or {}
         policy = db.get(SystemSetting, policy_key(a.id))
-        enabled = bool(policy and policy.value.get("enabled"))
+        enabled = bool(
+            policy
+            and policy.value.get("enabled")
+            and cfg.get("monitoring_mode") != "cdn_web"
+        )
         if policy and policy.value.get("mode") == "paid_candidate":
             from .paid_recovery import enabled as paid_enabled
 

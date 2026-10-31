@@ -265,6 +265,25 @@ async def execute_task(task_id):
     from .services import proxy_address
     from .vault import decrypt
 
+    def target_matches(agent, payload):
+        cfg = agent.configuration or {}
+        if payload.get("monitoring_mode") == "cdn_web":
+            return (
+                cfg.get("monitoring_mode") == "cdn_web"
+                and payload["host"]
+                == (
+                    cfg.get("web_proxy_host")
+                    or cfg.get("dns_record")
+                    or agent.public_host
+                )
+                and payload.get("port") == 443
+            )
+        return (
+            cfg.get("monitoring_mode") != "cdn_web"
+            and payload.get("target_ip") == proxy_address(agent)
+            and payload.get("port", 443) == agent.proxy_port
+        )
+
     with SessionLocal() as db:
         task = db.get(ControlTask, task_id)
         integration = db.get(Integration, task.payload["integration_id"])
@@ -275,7 +294,7 @@ async def execute_task(task_id):
         target_ip = task.payload.get("target_ip")
         port = task.payload.get("port", 443)
         agent = db.get(Agent, task.agent_id)
-        if target_ip != proxy_address(agent) or port != agent.proxy_port:
+        if not target_matches(agent, task.payload):
             task.status, task.result = (
                 "failed",
                 {"error": "Адрес или порт изменился; создайте новую проверку"},
@@ -306,10 +325,17 @@ async def execute_task(task_id):
                 db.commit()
         report = await client.results(identifier, host, plan, target_ip)
         report["target_port"] = port
+        if task.payload.get("monitoring_mode") == "cdn_web":
+            report.update(
+                scope="cdn-edge-tls-sni",
+                resolution_scope="single_cdn_edge",
+                webproxy_data_verified=False,
+                note="Проверка TLS/SNI одного выбранного IPv4 CDN из РФ и трёх стран. Не проверяет все адреса CDN и передачу данных WEB-прокси; не запускает замену origin.",
+            )
         with SessionLocal() as db:
             task = db.get(ControlTask, task_id)
             agent = db.get(Agent, task.agent_id)
-            if target_ip != proxy_address(agent) or port != agent.proxy_port:
+            if not target_matches(agent, task.payload):
                 task.status, task.result = (
                     "failed",
                     {"error": "Адрес или порт изменился во время измерения"},

@@ -98,3 +98,11 @@ and encrypted profile; retain domain/hello/ad_tag across VPS replacements.
 The next subdomain, hello and ad_tag will be supplied later through secure
 settings. This request does not authorize installing on an existing node,
 changing DNS, buying a server, or enabling a new paid automation mode.
+
+The Lithuanian node's WEB proxy was subsequently switched to Gcore CDN in
+an approved pilot. The owner confirmed actual proxy traffic and selected
+Check-Host plus RIPE Atlas for CDN monitoring, excluding MTProto Checker
+from decisions for this node. Preserve its client CNAME and keep direct
+Floating IP/DNS automation disabled. HTTPS/TLS endpoint success is distinct
+from owner-confirmed WEB proxy data transfer. Other nodes retain their own
+monitoring modes. Atlas remains bounded to the existing hourly credit limit.

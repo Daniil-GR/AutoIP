@@ -37,6 +37,9 @@ def state_key(identifier):
 
 def enabled(db, agent_id):
     row = db.get(SystemSetting, policy_key(agent_id))
+    agent = db.get(Agent, agent_id)
+    if agent and (agent.configuration or {}).get("monitoring_mode") == "cdn_web":
+        return False
     return bool(row and row.value.get("enabled") is True)
 
 

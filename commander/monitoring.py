@@ -134,6 +134,11 @@ def atlas_fallback(db, agent_id, reports):
     failed = sorted({r["source"] for r in reports if primary_unanswered(r)})
     if not failed:
         return {"status": "standby", "role": "fallback"}
+    return schedule_atlas(db, agent_id, failed)
+
+
+def schedule_atlas(db, agent_id, failed=None):
+    failed = failed or []
     if not get_policy(db).atlas_fallback_enabled:
         return {"status": "disabled", "role": "fallback", "failed_sources": failed}
     # Serialize cooldown/dedup across Commander workers and UI checks.
@@ -184,6 +189,48 @@ def atlas_fallback(db, agent_id, reports):
 async def collect_agent(agent_id, host, port, ip):
     with SessionLocal() as db:
         config = dict(db.get(Agent, agent_id).configuration or {})
+    if config.get("monitoring_mode") == "cdn_web":
+        host = config.get("web_proxy_host") or config.get("dns_record") or host
+        report = await CheckHost().check(
+            host, 443, protocol="https", foreign_countries=("DE", "NL", "FR")
+        )
+        report = {
+            **report,
+            "scope": "cdn-web-endpoint",
+            "webproxy_data_verified": False,
+        }
+        with SessionLocal() as db:
+            atlas = schedule_atlas(db, agent_id)
+            db.commit()
+        return {
+            "monitoring_mode": "cdn_web",
+            "target": host,
+            "ip": None,
+            "port": 443,
+            "reports": [report],
+            "observations": [
+                {**o, "target": host, "scope": "cdn-web-endpoint"}
+                for o in report.get("observations", [])
+            ],
+            "web_endpoint": {
+                "target": host,
+                "port": 443,
+                "status": "reachable"
+                if any(
+                    o.get("country") == "RU" and o.get("state") == "reachable"
+                    for o in report.get("observations", [])
+                )
+                else "unknown",
+                "webproxy_data_verified": False,
+            },
+            "atlas_fallback": {
+                **atlas,
+                "role": "scheduled",
+                "resolution_scope": "single_cdn_edge",
+            },
+            "mtproto_verified": False,
+            "webproxy_data_verified": False,
+        }
 
     async def web_check():
         if config.get("proxy_mode") == FAKETLS_MODE or not config.get("web_proxy_host"):
