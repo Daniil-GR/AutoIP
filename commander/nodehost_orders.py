@@ -38,9 +38,9 @@ def exact_data(message, pattern):
 
 
 def quote_data(message, *, location="Poland", ram_gb=3):
-    if (location, ram_gb) not in (("Poland", 3), ("Germany", 2)):
+    if (location, ram_gb) not in (("Poland", 3), ("Germany", 2), ("Finland", 2)):
         raise NodeHostError("Конфигурация страны не согласована")
-    speed = 1 if location == "Germany" else 10
+    speed = 1 if location in ("Germany", "Finland") else 10
     text = message.raw_text
     for pattern in (
         r"CPU:\s*1\b",
@@ -155,10 +155,10 @@ async def prepare(telegram_id, *, location=None):
     """Browse only. The final buy callback is not sent by this function."""
     with SessionLocal() as db:
         location = selected_location(db, telegram_id, location)
-    if location not in ("Poland", "Germany"):
+    if location not in ("Poland", "Germany", "Finland"):
         raise NodeHostError("Локация Node Host не согласована")
-    ram_gb = 2 if location == "Germany" else 3
-    speed = 1 if location == "Germany" else 10
+    ram_gb = 2 if location in ("Germany", "Finland") else 3
+    speed = 1 if location in ("Germany", "Finland") else 10
     async with session(telegram_id) as client:
         m = await root_menu(client)
         m = await open_locations(client, m, speed=speed)

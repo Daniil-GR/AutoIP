@@ -1286,7 +1286,7 @@ async function vps(root) {
     $('dialogBody').append(select);
     saveButton(async () => {
       const q = await write('/api/nodehost/quote', {integration_id:select.value});
-      modal('Подтвердить покупку VPS', (q.location === 'Germany' ? 'Германия' : 'Польша') + ', ' + q.cpu + ' CPU / ' + q.ram_gb + ' ГБ RAM / ' + q.disk_gb + ' ГБ, порт ' + q.speed_gbps + ' Гбит/с. Сутки: ' + q.price_rub + ' ₽ (' + q.price_usd + ' $ по данным бота). Это платная покупка одного VPS. Установка и изменение DNS автоматически не запускаются.');
+      modal('Подтвердить покупку VPS', ({Germany:'Германия', Finland:'Финляндия', Poland:'Польша'}[q.location] || q.location) + ', ' + q.cpu + ' CPU / ' + q.ram_gb + ' ГБ RAM / ' + q.disk_gb + ' ГБ, порт ' + q.speed_gbps + ' Гбит/с. Сутки: ' + q.price_rub + ' ₽ (' + q.price_usd + ' $ по данным бота). Это платная покупка одного VPS. Установка и изменение DNS автоматически не запускаются.');
       const operationId = crypto.randomUUID();
       saveButton(async () => {
         const r = await write('/api/nodehost/order', {quote_id:q.quote_id, operation_id:operationId, approved:true});

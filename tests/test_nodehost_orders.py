@@ -230,16 +230,17 @@ def test_only_unchanged_unpaid_speed_menu_can_retry(monkeypatch, changed):
     assert len(calls) == (1 if changed else 2)
 
 
-def test_german_quote_binds_country_and_two_gb_memory():
+@pytest.mark.parametrize("location", ["Germany", "Finland"])
+def test_german_quote_binds_country_and_two_gb_memory(location):
     text = (
         TEXT.replace("RAM: 3", "RAM: 2")
-        .replace("Poland", "Germany")
+        .replace("Poland", location)
         .replace("10GBps", "1GBps")
     )
-    callback = DATA.replace("Poland", "Germany").replace(";10;", ";1;")
-    quote = orders.quote_data(message(text, callback), location="Germany", ram_gb=2)
+    callback = DATA.replace("Poland", location).replace(";10;", ";1;")
+    quote = orders.quote_data(message(text, callback), location=location, ram_gb=2)
     assert (quote["location"], quote["cpu"], quote["ram_gb"], quote["disk_gb"]) == (
-        "Germany",
+        location,
         1,
         2,
         25,
@@ -249,24 +250,27 @@ def test_german_quote_binds_country_and_two_gb_memory():
     with pytest.raises(nodehost.NodeHostError):
         orders.quote_data(
             message(text.replace("RAM: 2", "RAM: 3"), callback),
-            location="Germany",
+            location=location,
             ram_gb=2,
         )
     with pytest.raises(nodehost.NodeHostError):
-        orders.quote_data(message(text, DATA), location="Germany", ram_gb=2)
+        orders.quote_data(message(text, DATA), location=location, ram_gb=2)
 
 
-def test_german_purchase_rechecks_configuration_and_records_country(db, purchase_setup):
+@pytest.mark.parametrize("location", ["Germany", "Finland"])
+def test_german_purchase_rechecks_configuration_and_records_country(
+    db, purchase_setup, location
+):
     quote_id, client, m = purchase_setup
     m.raw_text = (
         TEXT.replace("RAM: 3", "RAM: 2")
-        .replace("Poland", "Germany")
+        .replace("Poland", location)
         .replace("10GBps", "1GBps")
     )
-    callback = DATA.replace("Poland", "Germany").replace(";10;", ";1;")
+    callback = DATA.replace("Poland", location).replace(";10;", ";1;")
     m.buttons = [[SimpleNamespace(data=callback.encode())]]
     q = db.get(SystemSetting, "nh-quote:" + quote_id)
-    q.value = {**q.value, **orders.quote_data(m, location="Germany", ram_gb=2)}
+    q.value = {**q.value, **orders.quote_data(m, location=location, ram_gb=2)}
     db.commit()
 
     async def click(*, data):
@@ -277,7 +281,7 @@ def test_german_purchase_rechecks_configuration_and_records_country(db, purchase
     result = asyncio.run(orders.purchase(quote_id, str(uuid4()), approved=True))
     assert result["status"] == "ALLOCATED"
     resource = db.get(SystemSetting, "vps-receipt:20")
-    assert resource.value["location"] == "Germany"
+    assert resource.value["location"] == location
     assert resource.value["ram_gb"] == 2
     assert client.clicks == 1
 

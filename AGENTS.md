@@ -77,3 +77,7 @@ proxy hostname/profile. When searching Poland in future, three confirmed
 Polish REJECT_RU_FILTER receipts trigger Germany for that search. Unknown
 checks do not count. The owner reported manually deleting Polish servers;
 keep this report distinct from a verified provider deletion/refund.
+
+Finland was subsequently selected by the owner because German purchases were
+temporarily disabled. Current candidate configuration remains 1 vCPU / 2 GB /
+25 GB, Ubuntu 24.04, one day, 1 Gbps. Preserve the existing hostname/profile.
