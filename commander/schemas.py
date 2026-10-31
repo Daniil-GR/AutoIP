@@ -97,6 +97,7 @@ class IntegrationInput(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     kind: Literal[
         "cherry",
+        "gcore",
         "dynadot",
         "telegram_bot",
         "telethon",
@@ -172,6 +173,7 @@ class IntegrationInput(BaseModel):
                 )
             return
         keys = {
+            "gcore": {"api_key"},
             "cherry": {"api_key"},
             "dynadot": {"api_key", "api_secret"},
             "telegram_bot": {"token"},
@@ -181,6 +183,13 @@ class IntegrationInput(BaseModel):
         }[self.kind]
         if set(self.credentials) != keys or not all(self.credentials.values()):
             raise ValueError("Необходимы поля: " + ", ".join(sorted(keys)))
+        if self.kind == "gcore" and (
+            len(self.credentials["api_key"]) < 12
+            or any(not 33 <= ord(c) <= 126 for c in self.credentials["api_key"])
+        ):
+            raise ValueError(
+                "Токен Gcore не должен содержать пробелы или переносы строк"
+            )
         if self.kind == "mtproto" and not re.fullmatch(
             r"[a-fA-F0-9]{32}", self.credentials["secret"]
         ):

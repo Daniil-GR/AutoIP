@@ -116,6 +116,21 @@ def dns_plan(snapshot, zone, host, old_ip, new_ip):
 
 async def test_connection(kind, credentials):
     try:
+        if kind == "gcore":
+            async with httpx.AsyncClient(timeout=12, follow_redirects=False) as client:
+                response = await client.get(
+                    "https://api.gcore.com/iam/clients/me",
+                    headers={"Authorization": "APIKey " + credentials["api_key"]},
+                )
+                response.raise_for_status()
+                if not isinstance(response.json(), dict) or not response.json():
+                    raise ValueError("Unexpected Gcore response")
+            return {
+                "ok": True,
+                "scope": "iam_auth_only",
+                "edge_proxy_tested": False,
+                "message": "Gcore: токен принят IAM API. Права Edge Proxy и работа MTProto ещё не проверены. Платные ресурсы не создавались",
+            }
         if kind in ("telemt_profile", "vps_access"):
             return {
                 "ok": False,

@@ -28,6 +28,7 @@ const pages = {
   settings: ["⚙", "Настройки", "Безопасность и готовность Commander"],
 };
 const statuses = {
+  gcore: "Gcore",
   cdn_web_reachable: "HTTPS через CDN: доступ из РФ обнаружен",
   cdn_web_suspected: "Возможна недоступность CDN из РФ — требуется проверка",
   cdn_web_unknown: "Недостаточно данных о доступности CDN",
@@ -936,6 +937,7 @@ function integrationForm() {
   select.setAttribute("aria-label", "Сервис");
   for (const [v, t] of [
     ["cherry", "Cherry Servers"],
+    ["gcore", "Gcore — CDN / Edge Proxy"],
     ["dynadot", "Dynadot"],
     ["telegram_bot", "Telegram-бот"],
     ["telethon", "Telegram-аккаунт Telethon"],
@@ -958,6 +960,7 @@ function integrationForm() {
     inputs = {};
     const keys = {
       cherry: ["api_key"],
+      gcore: ["api_key"],
       dynadot: ["api_key", "api_secret"],
       telegram_bot: ["token"],
       telethon: ["api_id", "api_hash", "phone", "session"],

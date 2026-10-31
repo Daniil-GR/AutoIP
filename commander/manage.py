@@ -95,6 +95,7 @@ def main():
         "kind",
         choices=[
             "cherry",
+            "gcore",
             "dynadot",
             "telegram_bot",
             "telethon",
@@ -406,6 +407,7 @@ def main():
     else:
         fields = {
             "cherry": ["api_key"],
+            "gcore": ["api_key"],
             "dynadot": ["api_key", "api_secret"],
             "telegram_bot": ["token"],
             "telethon": ["api_id", "api_hash", "session"],
