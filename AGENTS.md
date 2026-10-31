@@ -106,3 +106,18 @@ from decisions for this node. Preserve its client CNAME and keep direct
 Floating IP/DNS automation disabled. HTTPS/TLS endpoint success is distinct
 from owner-confirmed WEB proxy data transfer. Other nodes retain their own
 monitoring modes. Atlas remains bounded to the existing hourly credit limit.
+
+## Three agent setup modes, confirmed by owner on 2026-10-31
+
+Use these three user-facing setup modes when describing agent configuration:
+
+1. Web + MTProto directly: Web on 443 and MTProto on 9443.
+2. MTProto only: FakeTLS on 443.
+3. Web through CDN: client connects through the CDN to the node's Web proxy.
+
+The Lithuanian node currently uses the third mode. This classification is
+separate from the hosting strategy (Cherry Floating IP or whole-VPS replacement).
+Implementation currently represents CDN through monitoring_mode=cdn_web over
+the Web + MTProto installation; a unified third installation-mode selector and
+automatic CDN origin updates are not implemented. The owner's request here is
+to record this classification, without changing live configuration or automation.

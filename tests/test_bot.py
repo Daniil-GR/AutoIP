@@ -18,7 +18,7 @@ def action(db, user, label, kind, target=""):
 
 def test_callbacks_user_bound_expiring_single_use(db, monkeypatch):
     monkeypatch.setattr(settings, "telegram_admin_ids", [1, 2])
-    b = button(db, 1, "Статус", "status")
+    b = button(db, 1, "Подтвердить", "confirm_recovery")
     db.commit()
     token = b.callback_data[2:]
     with pytest.raises(HTTPException):
@@ -30,7 +30,7 @@ def test_callbacks_user_bound_expiring_single_use(db, monkeypatch):
     assert item.used_at
     with pytest.raises(HTTPException):
         consume_action(db, 1, token)
-    b = button(db, 1, "Статус", "status")
+    b = button(db, 1, "Подтвердить", "confirm_recovery")
     db.commit()
     item = db.get(
         BotAction,
@@ -51,7 +51,7 @@ def test_menu_and_shared_services(db, monkeypatch):
     )
     db.add(a)
     db.commit()
-    assert len(menu(db, 1).inline_keyboard) == 9
+    assert sum(len(row) for row in menu(db, 1).inline_keyboard) == 9
     for kind in [
         "status",
         "agents",
@@ -150,3 +150,175 @@ def test_sni_bot_requires_confirmation_and_uses_shared_deduped_task(db, monkeypa
     assert db.scalar(select(FloatingIP)) is None
     a.configuration = {**a.configuration, "floating_ip": "1.1.1.1"}
     assert proxy_address(a) == "1.1.1.1"
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "menu",
+        "status",
+        "agents",
+        "agent:agents",
+        "page:checks",
+        "recovery_status",
+        "prepare_sni",
+    ],
+)
+def test_navigation_reusable_after_expiry_and_previous_use(db, monkeypatch, kind):
+    from commander.security import digest
+
+    monkeypatch.setattr(settings, "telegram_admin_ids", [1, 2])
+    b = button(db, 1, "Открыть", kind, "target")
+    db.commit()
+    stored = db.get(BotAction, digest(b.callback_data[2:]))
+    stored.expires_at = utcnow() - timedelta(days=2)
+    stored.used_at = utcnow() - timedelta(days=3)
+    db.commit()
+    for _ in range(2):
+        assert consume_action(db, 1, b.callback_data[2:]).action == kind
+        db.commit()
+    with pytest.raises(HTTPException):
+        consume_action(db, 2, b.callback_data[2:])
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "check",
+        "pause",
+        "resume",
+        "confirm_sni",
+        "confirm_recovery",
+        "incident:confirm",
+        "incident:working",
+    ],
+)
+def test_mutations_remain_single_use(db, monkeypatch, kind):
+    monkeypatch.setattr(settings, "telegram_admin_ids", [1])
+    b = button(db, 1, "Действие", kind, "target")
+    db.commit()
+    assert consume_action(db, 1, b.callback_data[2:]).used_at
+    db.commit()
+    with pytest.raises(HTTPException):
+        consume_action(db, 1, b.callback_data[2:])
+
+
+def test_expired_mutation_opens_menu_without_executing(db, monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+    from contextlib import nullcontext
+    from commander import bot
+    from commander.security import digest
+
+    monkeypatch.setattr(settings, "telegram_admin_ids", [1])
+    b = button(db, 1, "Подтвердить", "confirm_recovery", "missing-agent")
+    db.commit()
+    stored = db.get(BotAction, digest(b.callback_data[2:]))
+    stored.expires_at = utcnow() - timedelta(seconds=1)
+    db.commit()
+    monkeypatch.setattr(bot, "SessionLocal", lambda: nullcontext(db))
+    dispatch = Mock(side_effect=AssertionError("Expired action must never execute"))
+    monkeypatch.setattr(bot, "dispatch_action", dispatch)
+    query = SimpleNamespace(
+        from_user=SimpleNamespace(id=1),
+        data=b.callback_data,
+        answer=AsyncMock(),
+        message=SimpleNamespace(answer=AsyncMock(), edit_text=AsyncMock()),
+    )
+    asyncio.run(bot.callback(query))
+    dispatch.assert_not_called()
+    query.message.answer.assert_awaited_once()
+    assert "reply_markup" in query.message.answer.call_args.kwargs
+    assert db.scalar(select(Recovery)) is None
+
+
+def test_cdn_card_hides_direct_recovery_and_old_confirmation_is_rejected(
+    db, monkeypatch
+):
+    from commander.bot import agent_view
+
+    monkeypatch.setattr(settings, "telegram_admin_ids", [1])
+    a = Agent(
+        name="CDN",
+        token_hash="cdn-bot",
+        public_host="node.vetka.rest",
+        facts={},
+        configuration={"monitoring_mode": "cdn_web"},
+    )
+    db.add(a)
+    db.commit()
+    text, markup = agent_view(db, 1, a.id, "agents")
+    db.commit()
+    assert "Режим: Web через CDN" in text
+    assert "смена IP и DNS выключена" in text
+    assert not any(
+        "Подготовить восстановление" in b.text
+        for row in markup.inline_keyboard
+        for b in row
+    )
+    assert any("К списку" in b.text for row in markup.inline_keyboard for b in row)
+    with pytest.raises(HTTPException):
+        dispatch_action(db, 1, action(db, 1, "Подтвердить", "confirm_recovery", a.id))
+    assert db.scalar(select(Recovery)) is None
+
+
+def test_persistent_menu_and_sections_have_return_navigation(db, monkeypatch):
+    from commander.bot import persistent_menu
+
+    monkeypatch.setattr(settings, "telegram_admin_ids", [1])
+    assert persistent_menu().is_persistent
+    assert persistent_menu().keyboard[0][0].text == "🏠 Главное меню"
+    for kind in ("status", "ips", "costs", "history"):
+        _, markup = dispatch_action(db, 1, action(db, 1, "Открыть", kind))
+        labels = [b.text for row in markup.inline_keyboard for b in row]
+        assert "🔄 Обновить" in labels and "🏠 Главное меню" in labels
+
+
+def test_repeated_navigation_callbacks_refresh_same_message(db, monkeypatch):
+    import asyncio
+    from contextlib import nullcontext
+    from unittest.mock import AsyncMock
+    from commander import bot
+
+    monkeypatch.setattr(settings, "telegram_admin_ids", [1])
+    b = button(db, 1, "Статус", "status")
+    db.commit()
+    monkeypatch.setattr(bot, "SessionLocal", lambda: nullcontext(db))
+    query = SimpleNamespace(
+        from_user=SimpleNamespace(id=1),
+        data=b.callback_data,
+        answer=AsyncMock(),
+        message=SimpleNamespace(answer=AsyncMock(), edit_text=AsyncMock()),
+    )
+    for _ in range(2):
+        db.expire_all()
+        asyncio.run(bot.callback(query))
+    assert query.message.edit_text.await_count == 2
+    query.message.answer.assert_not_awaited()
+    assert db.scalar(select(ControlTask)) is None
+
+
+@pytest.mark.parametrize(
+    "config, port, label",
+    [
+        ({}, 9443, "Web + MTProto"),
+        ({"proxy_mode": "mtproto_faketls"}, 443, "MTProto FakeTLS"),
+        ({"monitoring_mode": "cdn_web"}, 9443, "Web через CDN"),
+    ],
+)
+def test_agent_card_setup_modes(db, config, port, label):
+    from commander.bot import agent_view
+
+    a = Agent(
+        name="Test mode",
+        token_hash="mode-bot",
+        public_host="node.vetka.rest",
+        proxy_port=port,
+        configuration=config,
+        facts={},
+    )
+    db.add(a)
+    db.commit()
+    text, _ = agent_view(db, 1, a.id, "agents")
+    assert f"Режим: {label}" in text
+    assert "Последняя проверка:" in text

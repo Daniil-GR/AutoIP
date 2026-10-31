@@ -12,7 +12,9 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     Message,
+    ReplyKeyboardMarkup,
 )
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -52,6 +54,39 @@ from .sponsorship import status_label as sponsorship_label
 
 router = Router()
 log = logging.getLogger(__name__)
+
+# Only navigation is reusable. Checks, confirmations and incident decisions
+# retain their expiry and transactional single-use guard, including old tokens.
+NAVIGATION_ACTIONS = frozenset(
+    {
+        "menu",
+        "status",
+        "agents",
+        "checks",
+        "recovery",
+        "automation",
+        "ips",
+        "vps",
+        "costs",
+        "history",
+        "agent_ips",
+        "recovery_status",
+        "prepare_sni",
+        "prepare_recovery",
+    }
+    | {"agent:" + mode for mode in ("agents", "checks", "recovery", "automation")}
+    | {"page:" + mode for mode in ("agents", "checks", "recovery", "automation")}
+)
+
+
+def persistent_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🏠 Главное меню"), KeyboardButton(text="🖥 Агенты")]
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 def admin_ids():
@@ -108,14 +143,13 @@ def consume_action(db, user_id, token):
     action = db.scalar(
         select(BotAction).where(BotAction.token_hash == digest(token)).with_for_update()
     )
-    if (
-        not action
-        or action.user_id != str(user_id)
-        or action.used_at
-        or aware(action.expires_at) <= utcnow()
-    ):
+    if not action or action.user_id != str(user_id):
+        raise HTTPException(409, "Кнопка недоступна. Открыто новое меню.")
+    if action.action in NAVIGATION_ACTIONS:
+        return action
+    if action.used_at or aware(action.expires_at) <= utcnow():
         raise HTTPException(
-            409, "Кнопка устарела или уже использована. Откройте меню заново"
+            409, "Подтверждение устарело или уже использовано. Действие не выполнено."
         )
     action.used_at = utcnow()
     return action
@@ -137,7 +171,8 @@ def menu(db, user_id):
         ("📜 История операций", "history"),
         ("⚙️ Настройки автоматизации", "automation"),
     ]
-    rows = [[button(db, user_id, label, action)] for label, action in entries]
+    buttons = [button(db, user_id, label, action) for label, action in entries]
+    rows = [buttons[:1]] + [buttons[i : i + 2] for i in range(1, len(buttons), 2)]
     if settings.public_url.startswith("https://"):
         rows.append(
             [
@@ -229,6 +264,12 @@ def agent_view(db, user_id, agent_id, mode):
         else "нет проверок"
     )
     cdn = config.get("monitoring_mode") == "cdn_web"
+    if cdn and check and (check.details or {}).get("monitoring_mode") != "cdn_web":
+        monitor_state = "проверок CDN ещё нет"
+    if cdn and check and check.result == "cdn_web_reachable":
+        web_state = "HTTPS CDN доступен; передача данных прокси отдельно не проверялась"
+    if config.get("proxy_mode") == "mtproto_faketls":
+        web_state = "не используется в режиме MTProto FakeTLS"
     if cdn and sni and (sni.details or {}).get("scope") != "cdn-edge-tls-sni":
         sni_state = "проверок CDN ещё нет"
     protocol_state = (
@@ -260,14 +301,29 @@ def agent_view(db, user_id, agent_id, mode):
         if reserve["policy"].get("consumed_by")
         else "ручной безопасный режим"
     )
+    if cdn:
+        automation = (
+            "мониторинг приостановлен"
+            if agent.paused
+            else "мониторинг включён; смена IP и DNS выключена для CDN"
+        )
+    setup_mode = (
+        "Web через CDN"
+        if cdn
+        else "MTProto FakeTLS · 443"
+        if config.get("proxy_mode") == "mtproto_faketls"
+        else "Web + MTProto"
+    )
     text = (
         f"🖥 {agent.name}\n{client_host or 'Домен не определён'}:{client_port}\n"
+        f"Режим: {setup_mode}\n"
         f"DNS: {config.get('dns_record') or 'не задан'}\n"
-        f"Floating IP: {config.get('floating_ip') or 'не настроен'}\n"
-        f"Исходный IPv4 прокси: {config.get('proxy_ip') or 'не указан'}\n"
+        f"{'Origin CDN' if cdn else 'Floating IP'}: {config.get('floating_ip') or 'не настроен'}\n"
+        f"Management IPv4: {config.get('management_ip') or config.get('proxy_ip') or 'не указан'}\n"
         f"Связь: {'онлайн' if online(agent) else 'нет heartbeat'}\n"
         f"Telemt: {agent.facts.get('telemt_service', 'неизвестно')}\n"
         f"Мониторинг: {monitor_state}\n"
+        f"Последняя проверка: {display_time(check.created_at) if check else 'ещё не выполнялась'}\n"
         f"MTProto Checker: {protocol_state}\n"
         f"Веб-прокси: {web_state}\n"
         f"SNI РФ / зарубежье: {sni_state}\n"
@@ -285,29 +341,46 @@ def agent_view(db, user_id, agent_id, mode):
             button(
                 db,
                 user_id,
-                "Возобновить" if agent.paused else "Приостановить",
+                (
+                    "▶️ Возобновить мониторинг"
+                    if agent.paused
+                    else "⏸ Приостановить мониторинг"
+                )
+                if cdn
+                else (
+                    "▶️ Возобновить работу"
+                    if agent.paused
+                    else "⏸ Пауза мониторинга и автоматики"
+                ),
                 "resume" if agent.paused else "pause",
                 agent.id,
             )
         ],
-        [
-            button(
-                db,
-                user_id,
-                "🔄 Подготовить восстановление",
-                "prepare_recovery",
-                agent.id,
-            )
-        ],
         [button(db, user_id, "История IP", "agent_ips", agent.id)],
-        [button(db, user_id, "Обновить", "agent:" + mode, agent.id)],
-        [button(db, user_id, "Главное меню", "menu")],
+        [button(db, user_id, "🔄 Обновить карточку", "agent:" + mode, agent.id)],
+        [
+            button(db, user_id, "← К списку агентов", "agents"),
+            button(db, user_id, "🏠 Меню", "menu"),
+        ],
     ]
+    if not cdn:
+        rows.insert(
+            3,
+            [
+                button(
+                    db,
+                    user_id,
+                    "🔄 Подготовить восстановление",
+                    "prepare_recovery",
+                    agent.id,
+                )
+            ],
+        )
     return text, keyboard(rows)
 
 
 @router.message(CommandStart())
-@router.message(F.text == "Меню")
+@router.message(F.text.in_({"Меню", "🏠 Главное меню"}))
 async def start(message: Message):
     with SessionLocal() as db:
         markup = menu(db, message.from_user.id)
@@ -315,10 +388,19 @@ async def start(message: Message):
 
         paid_count = enabled_count(db)
         db.commit()
+    await message.answer("Управление AutoIP", reply_markup=persistent_menu())
     await message.answer(
         f"AutoIP Commander\nВыберите раздел. Автопокупки разрешены для агентов: {paid_count}.",
         reply_markup=markup,
     )
+
+
+@router.message(F.text == "🖥 Агенты")
+async def open_agents(message: Message):
+    with SessionLocal() as db:
+        markup = agent_buttons(db, message.from_user.id, "agents")
+        db.commit()
+    await message.answer("Выберите агента", reply_markup=markup)
 
 
 @router.callback_query(F.data.startswith("a:"))
@@ -335,7 +417,14 @@ async def callback(query: CallbackQuery):
             # The action was already committed. Do not execute it a second time.
             await query.message.answer(text[:4000], reply_markup=markup)
     except HTTPException as exc:
-        await query.answer(str(exc.detail), show_alert=True)
+        if exc.status_code != 409:
+            await query.answer(str(exc.detail), show_alert=True)
+            return
+        with SessionLocal() as db:
+            markup = menu(db, query.from_user.id)
+            db.commit()
+        await query.answer("Открыто актуальное меню. Действие не повторялось.")
+        await query.message.answer(str(exc.detail), reply_markup=markup)
 
 
 def dispatch_action(db, user_id, item):
@@ -365,7 +454,10 @@ def dispatch_action(db, user_id, item):
         task = request_check(db, target, actor)
         text = f"Проверка поставлена в очередь.\nЗадание: {task.id}\nРезультат появится в карточке агента и панели."
         markup = keyboard(
-            [[button(db, user_id, "Обновить статус агента", "agent:checks", target)]]
+            [
+                [button(db, user_id, "Обновить статус агента", "agent:checks", target)],
+                [button(db, user_id, "🏠 Меню", "menu")],
+            ]
         )
     elif action == "prepare_sni":
         agent = require_agent(db, target)
@@ -389,7 +481,7 @@ def dispatch_action(db, user_id, item):
                 ]
                 for i in integrations
             ]
-            + [[button(db, user_id, "Отмена", "menu")]]
+            + [[button(db, user_id, "← К агенту", "agent:checks", target)]]
         )
     elif action == "confirm_sni":
         agent_id, integration_id = target.split(":", 1)
@@ -400,13 +492,23 @@ def dispatch_action(db, user_id, item):
             + ". Результат появится в мониторинге панели и карточке агента."
         )
         markup = keyboard(
-            [[button(db, user_id, "Обновить агента", "agent:checks", agent_id)]]
+            [
+                [button(db, user_id, "Обновить агента", "agent:checks", agent_id)],
+                [button(db, user_id, "🏠 Меню", "menu")],
+            ]
         )
     elif action in ("pause", "resume"):
         set_paused(db, target, action == "pause", actor)
         return agent_view(db, user_id, target, "automation")
     elif action == "prepare_recovery":
         agent = require_agent(db, target)
+        if (agent.configuration or {}).get("monitoring_mode") == "cdn_web":
+            text, markup = agent_view(db, user_id, target, "recovery")
+            return (
+                text
+                + "\n\nВосстановление через CDN пока недоступно: требуется управление origin. CNAME сохранён.",
+                markup,
+            )
         text = f"Подготовить план восстановления для {agent.name}?\nПроверим настройки и сохраним результат. Покупки и изменения DNS отключены."
         markup = keyboard(
             [
@@ -424,6 +526,11 @@ def dispatch_action(db, user_id, item):
             ]
         )
     elif action == "confirm_recovery":
+        agent = require_agent(db, target)
+        if (agent.configuration or {}).get("monitoring_mode") == "cdn_web":
+            raise HTTPException(
+                409, "Режим агента изменён на CDN. Восстановление не запускалось."
+            )
         recovery = recovery_plan(db, target, actor, "bot:" + item.token_hash)
         return recovery_view(db, user_id, recovery)
     elif action == "recovery_status":
@@ -451,7 +558,6 @@ def dispatch_action(db, user_id, item):
             or "Нет импортированных VPS"
         )
         text += "\nПроверка SSH и ОС доступна в разделе VPS Node Host веб-панели. Секреты в Telegram не отправляйте."
-        markup = menu(db, user_id)
     elif action in ("ips", "agent_ips"):
         query = select(FloatingIP).order_by(FloatingIP.created_at.desc()).limit(20)
         if action == "agent_ips":
@@ -487,7 +593,15 @@ def dispatch_action(db, user_id, item):
         )
     else:
         raise HTTPException(422, "Неизвестное действие")
-    return text, markup or keyboard([[button(db, user_id, "Главное меню", "menu")]])
+    if markup is None:
+        rows = []
+        if action in NAVIGATION_ACTIONS and action != "menu":
+            rows.append([button(db, user_id, "🔄 Обновить", action, target)])
+        if action == "agent_ips":
+            rows.append([button(db, user_id, "← К агенту", "agent:agents", target)])
+        rows.append([button(db, user_id, "🏠 Главное меню", "menu")])
+        markup = keyboard(rows)
+    return text, markup
 
 
 def recovery_view(db, user_id, recovery):
@@ -510,6 +624,7 @@ def recovery_view(db, user_id, recovery):
     return text, keyboard(
         [
             [button(db, user_id, "Обновить этапы", "recovery_status", recovery.id)],
+            [button(db, user_id, "← К агенту", "agent:recovery", recovery.agent_id)],
             [button(db, user_id, "Главное меню", "menu")],
         ]
     )
