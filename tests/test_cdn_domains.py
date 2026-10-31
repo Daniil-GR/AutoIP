@@ -298,3 +298,88 @@ def test_bot_confirmation_and_stop_use_shared_service(db, monkeypatch):
     bot.dispatch_action(db, 1, SimpleNamespace(action="cdn_stop", target=t.id))
     db.commit()
     assert t.status == "cancelled"
+
+
+def test_gcore_reorders_aliases_without_losing_existing_names(client, monkeypatch):
+    factory = client.factory
+    monkeypatch.setattr(cdn, "SessionLocal", factory)
+    resource = {
+        "active": True,
+        "sslEnabled": True,
+        "sslData": 1,
+        "cname": "lt.vetka.rest",
+        "secondaryHostnames": ["test-lt.vetka.rest"],
+        "options": {
+            "forward_host_header": {"enabled": True, "value": True},
+            "sni": {
+                "enabled": True,
+                "sni_type": "custom",
+                "custom_hostname": "lt.vetka.rest",
+            },
+        },
+    }
+    sorted_readback = {
+        **resource,
+        "secondaryHostnames": ["lt1.vetka.rest", "test-lt.vetka.rest"],
+    }
+    call = AsyncMock(side_effect=[resource, {}, sorted_readback])
+    monkeypatch.setattr(cdn.Gcore, "call", call)
+    with factory() as db:
+        setup(db)
+        for identifier, kind, credentials in [
+            ("g", "gcore", {"api_key": "k"}),
+            ("d", "dynadot", {"api_key": "k", "api_secret": "s"}),
+        ]:
+            db.add(
+                Integration(
+                    id=identifier,
+                    kind=kind,
+                    name=kind,
+                    ciphertext=encrypt(identifier, kind, credentials),
+                )
+            )
+        t = cdn.create(db, "cdn", "lt1", 1)
+        db.flush()
+        cdn.confirm(db, t.id, 1)
+        t.payload = {**t.payload, "stage": "GCORE", "aliases": ["test-lt.vetka.rest"]}
+        db.commit()
+        tid = t.id
+    assert asyncio.run(cdn.tick())
+    with factory() as db:
+        t = db.get(ControlTask, tid)
+        assert t.status == "queued" and t.payload["stage"] == "TLS"
+    assert call.await_args_list[1].kwargs["json"] == {
+        "secondaryHostnames": ["test-lt.vetka.rest", "lt1.vetka.rest"]
+    }
+
+
+def test_dns_wait_never_issues_certificate_while_unresolved(client, monkeypatch):
+    factory = client.factory
+    monkeypatch.setattr(cdn, "SessionLocal", factory)
+    monkeypatch.setattr(cdn, "dns_ready", AsyncMock(return_value=False))
+    call = AsyncMock()
+    monkeypatch.setattr(cdn.Gcore, "call", call)
+    with factory() as db:
+        setup(db)
+        for identifier, kind, credentials in [
+            ("g", "gcore", {"api_key": "k"}),
+            ("d", "dynadot", {"api_key": "k", "api_secret": "s"}),
+        ]:
+            db.add(
+                Integration(
+                    id=identifier,
+                    kind=kind,
+                    name=kind,
+                    ciphertext=encrypt(identifier, kind, credentials),
+                )
+            )
+        t = cdn.create(db, "cdn", "lt1", 1)
+        db.flush()
+        cdn.confirm(db, t.id, 1)
+        t.payload = {**t.payload, "stage": "DNS_WAIT"}
+        db.commit()
+    assert asyncio.run(cdn.tick())
+    assert call.await_count == 0
+    with factory() as db:
+        t = db.scalar(select(ControlTask))
+        assert t.status == "queued" and t.payload["next_at"]

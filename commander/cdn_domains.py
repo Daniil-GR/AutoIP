@@ -32,6 +32,7 @@ HELPER_SHA256 = "81c9d5d50d0fefea6e6f113d4624a3b955114644bbdd147b40f80307c65fe75
 LABELS = {
     "PREFLIGHT": "Проверка настроек и свободного имени",
     "DNS": "Добавление CNAME",
+    "DNS_WAIT": "Ожидание распространения DNS",
     "GCORE": "Добавление имени в CDN",
     "TLS": "Ожидание DNS и сертификата CDN",
     "NODE": "Настройка Nginx и Telemt",
@@ -369,6 +370,28 @@ async def tls_ready(name, destination):
         return False
 
 
+async def dns_ready(name, destination):
+    """Avoid triggering certificate issuance while recursive DNS is still negative."""
+    import ipaddress
+    import dns.asyncresolver
+
+    try:
+        for server in ("1.1.1.1", "8.8.8.8"):
+            resolver = dns.asyncresolver.Resolver(configure=False)
+            resolver.nameservers = [server]
+            cname = await resolver.resolve(name, "CNAME", lifetime=8)
+            if {str(r.target).rstrip(".").lower() for r in cname} != {destination}:
+                return False
+            addresses = await resolver.resolve(name, "A", lifetime=8)
+            if not addresses or not all(
+                ipaddress.ip_address(str(r)).is_global for r in addresses
+            ):
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def credentials(db, identifier, kind):
     item = db.get(Integration, identifier)
     if not item or item.kind != kind:
@@ -431,14 +454,22 @@ async def advance(db, task):
             task.payload = {**p, "dns_pending": True}
             db.commit()
             await dns.append(name, cfg["cname"], p["dns_before"])
-        p.update(stage="GCORE", dns_pending=True)
+        p.update(stage="DNS_WAIT", dns_pending=True)
+    elif stage == "DNS_WAIT":
+        if not await dns_ready(name, cfg["cname"]):
+            task.payload = {
+                **p,
+                "next_at": (utcnow() + timedelta(seconds=45)).isoformat(),
+            }
+            return
+        p["stage"] = "GCORE"
     elif stage == "GCORE":
         resource = await gcore.call("GET", path)
         resource_ok(resource, cfg)
         aliases = resource.get("secondaryHostnames") or []
         expected = [*p["aliases"], name]
-        if aliases != expected:
-            if aliases != p["aliases"] or p.get("gcore_pending"):
+        if sorted(aliases) != sorted(expected):
+            if sorted(aliases) != sorted(p["aliases"]) or p.get("gcore_pending"):
                 raise AliasError(
                     "CDN изменился или результат записи неопределён; нужна сверка"
                 )
@@ -446,7 +477,7 @@ async def advance(db, task):
             db.commit()
             await gcore.call("PATCH", path, json={"secondaryHostnames": expected})
             readback = await gcore.call("GET", path)
-            if readback.get("secondaryHostnames") != expected:
+            if sorted(readback.get("secondaryHostnames") or []) != sorted(expected):
                 raise AliasError("Добавление имени в CDN не подтверждено")
         p.update(stage="TLS", gcore_pending=True)
     elif stage == "TLS":
