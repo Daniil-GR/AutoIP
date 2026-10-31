@@ -1,0 +1,11 @@
+[Unit]
+Description=AutoIP opted-in network helper
+[Socket]
+ListenStream=/run/autoip-network-helper.sock
+SocketUser=root
+SocketGroup=autoip-agent
+SocketMode=0660
+Accept=yes
+MaxConnections=2
+[Install]
+WantedBy=sockets.target

@@ -1,23 +1,15 @@
-# Architecture
+# Архитектура v0.2
 
-Commander is the independent control plane: FastAPI, database, monitoring scheduler, management UI, future provider integrations. The agent resides next to Telemt and connects outward over TLS; it has no public management endpoint.
+Commander: FastAPI + PostgreSQL + Alembic; отдельные процессы worker и aiogram 3 bot. API и bot вызывают общие транзакционные действия `commander/services.py`. Worker берёт постоянные ControlTask с lease и ограничением повторов. Все изменения настроек и решений аудируются.
 
-Commander never uses the changeable Floating IP for management. Every agent is identified separately from its address and has its own hashed API token.
+Браузер использует HttpOnly/SameSite сессию и CSRF token; поддерживается TOTP. Legacy Basic сохранён для совместимости и отключается при настроенной TOTP. Публичные сервисы должны работать за доверенным HTTPS reverse proxy с ограничением частоты.
 
-## Registration
+Интеграции шифруются отдельным мастер-ключом, недоступным в PostgreSQL backup. Привязки к общим интеграциям сохраняются отдельно для каждого Agent. Ни ключи провайдеров, ни Telegram sessions агентам не передаются.
 
-Commander issues one-time enrollment token for 15 minutes. An agent enrolls with its persistent machine identity, receives a long-lived opaque token and saves it with restrictive permissions.
+Агент соединяется исходящим HTTPS, имеет индивидуальный непрозрачный ключ, Commander хранит SHA-256. Enrollment одноразовый, machine_id уникален. Отзыв доступа блокирует heartbeat и задания. Agent хранит результаты в локальной SQLite до подтверждения Commander.
 
-Admin panel currently requires HTTP Basic authentication behind TLS; session management and 2FA are needed before production.
+Root broker опционален: Unix socket, SO_PEERCRED и фиксированные операции. Долгоживущий Agent остаётся непривилегированным, без sudo и capabilities. Чтение отдаёт только разрешённые поля Telemt. Запись ad_tag требует отдельного root-owned флага и разрешения Agent; файл сохраняется атомарно с backup и блокировкой. Запись не подтверждает hot reload.
 
-## Current database
+Мониторинг сохраняет три состояния; отдельный TCP timeout не становится блокировкой. Инциденты имеют постоянные решения и дедлайны +15/+20/+25. Финансовые операции и DNS-запись не доступны: восстановление пока заканчивается MANUAL_REQUIRED с сохранённой предпроверкой. Это не эквивалент законченного recovery engine.
 
-Agents, enrollments, jobs and raw checks. Jobs are leased with retry cap; agent command types are allowlisted. Default mode has no endpoints to buy/delete IPs.
-
-## Trust boundary
-
-The optional root helper can update exactly one TOML field and never takes arbitrary commands or paths. It is not installed or authorized by default. Writing the file does not prove that Telemt loaded its new tag.
-
-## Production TODO
-
-Formal DB migrations, credential rotation, admin auth strengthening, independent RU probes, verified MTProto tests, incident state machine, Telegram confirmations, Cherry + budgets, safe DNS changes, network rollback, Telethon, backup/reconcile operations.
+Проверенный статус и дальнейшие ограничения: `IMPLEMENTATION_STATUS_RU.md`.

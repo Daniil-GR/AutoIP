@@ -1,173 +1,90 @@
 <!doctype html>
-<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AutoIP — Commander</title>
-<style>
-:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8edf7;background:#0c111e;font-size:14px}
-*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 25% 0%,#182640 0,#0c111e 48%) fixed}
-button,input{font:inherit}button{cursor:pointer;border:0;transition:.15s}button:hover{filter:brightness(1.15)}
-a{color:#7ab8fa}.layout{min-height:100vh;display:flex}
-aside{width:235px;flex:none;border-right:1px solid #29344b;background:#0c1527a8;padding:26px 17px}
-.brand{font-size:23px;font-weight:800;letter-spacing:-.9px;margin-bottom:38px}
-.brand b{color:#62b6ff}.brand span{display:block;font-size:10px;color:#647eaa;letter-spacing:2px;margin-top:4px}
-.nav{padding:12px 16px;border-radius:10px;color:#93a6c7;display:flex;gap:12px;align-items:center;margin-bottom:5px}
-.nav.active{background:#1e3352;color:#b8d9ff;font-weight:650}.nav small{font-size:16px}
-.sidebar-footer{font-size:12px;color:#6880a3;position:absolute;bottom:24px;left:30px}
-main{padding:34px clamp(22px,4vw,58px);max-width:1500px;flex:1;min-width:0}
-header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:30px}
-h1{font-size:30px;font-weight:720;letter-spacing:-.8px;margin:0}
-.subtitle{color:#879abb;margin:8px 0 0}
-.btn{padding:12px 16px;background:#377ce8;color:white;border-radius:10px;font-weight:650}
-.btn.secondary{background:#202c43;color:#d3e3fa;border:1px solid #36445e}.btn.red{background:#6c3040}
-.stats{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:14px;margin-bottom:28px}
-.stat{border:1px solid #28354d;border-radius:16px;padding:20px 22px;background:#152037a8}
-.stat .label{color:#879abc;font-size:12px;margin-bottom:15px}
-.stat strong{font-size:30px;font-weight:720}
-.badge{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:100px;background:#23344e;color:#b9cbe8;font-size:11px;font-weight:650}
-.badge.online{background:#193f38;color:#74e4bc}.badge.offline{background:#3d2932;color:#ff9cae}
-.panel{border:1px solid #29354d;border-radius:16px;background:#131d30bc;overflow:hidden;margin-bottom:20px}
-.panel-head{padding:21px 22px;border-bottom:1px solid #2a3448;display:flex;justify-content:space-between;align-items:center}
-.panel-head strong{font-size:16px}.panel-head span{color:#8296b6;font-size:12px}
-.table-scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:680px;text-align:left}
-th,td{padding:16px 18px;border-bottom:1px solid #263248}
-th{font-size:11px;color:#8399ba;text-transform:uppercase;letter-spacing:.7px}
-tbody tr:last-child td{border-bottom:0}tbody tr:hover{background:#202c41}
-.name{font-weight:650}.muted{color:#8498ba;font-size:12px}
-.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
-.action{background:transparent;color:#7ab8fa;padding:5px 8px}
-.empty{text-align:center;padding:60px 20px;color:#879abb}
-.modal{position:fixed;inset:0;background:#020614c9;display:none;align-items:center;justify-content:center;padding:20px;z-index:9}
-.modal.show{display:flex}.dialog{background:#19243a;border:1px solid #354560;border-radius:18px;padding:26px;width:min(580px,100%);box-shadow:0 20px 80px #0009;max-height:90vh;overflow:auto}
-.dialog h2{margin:0 0 9px;font-size:22px}.dialog p{color:#98aaca;line-height:1.6}
-.field{margin:20px 0 16px}.field label{display:block;margin-bottom:8px;color:#b8c8e4;font-size:12px}
-.field input{background:#0d1628;border:1px solid #344764;border-radius:9px;padding:12px;color:white;width:100%}
-pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:16px;background:#0d1628;color:#9ed4fa;border:1px solid #34445e;border-radius:10px;font-size:12px}
-.dialog-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px;flex-wrap:wrap}
-.notice{margin-bottom:24px;border:1px solid #534a33;background:#29251c;border-radius:12px;padding:13px 17px;color:#d7c6a4;font-size:12px}
-.detail-row{display:flex;justify-content:space-between;gap:20px;border-bottom:1px solid #33415a;padding:12px 0}.detail-row span:first-child{color:#95a6c4}
-#toast{position:fixed;right:24px;bottom:22px;background:#26374f;color:#fff;border:1px solid #436288;border-radius:12px;padding:13px 20px;display:none;z-index:99;max-width:400px}
-@media(max-width:780px){aside{width:67px;padding:25px 9px}.brand{font-size:13px;text-align:center}.brand span{display:none}.nav{padding:12px;justify-content:center}.nav .navtext{display:none}.sidebar-footer{display:none}main{padding:24px 15px}.stats{grid-template-columns:repeat(2,1fr)}h1{font-size:24px}.panel-head{padding:16px}.stat{padding:17px}}
-</style></head><body><div class="layout">
-<aside><div class="brand">AUTO<b>IP</b><span>COMMAND CENTER</span></div>
-<div class="nav active"><small>▦</small><span class="navtext">Обзор</span></div>
-<div class="nav"><small>◈</small><span class="navtext">Агенты</span></div>
-<div class="nav"><small>⌁</small><span class="navtext">Мониторинг</span></div>
-<div class="nav"><small>⚙</small><span class="navtext">Интеграции (позже)</span></div>
-<div class="sidebar-footer">AutoIP v0.1 · Monitoring only</div></aside>
-<main><header><div><h1>Управление инфраструктурой</h1>
-<p class="subtitle">Один Commander — несколько независимых Telemt-агентов.</p></div>
-<button class="btn" id="add">+ Добавить агента</button></header>
-<div class="notice"><b>Безопасный режим:</b> покупки Floating IP, изменение DNS и автоматическая смена адресов ещё не реализованы и не выполняются.</div>
-<div class="stats">
-<div class="stat"><div class="label">Всего агентов</div><strong id="total">0</strong></div>
-<div class="stat"><div class="label">Онлайн</div><strong id="online">0</strong></div>
-<div class="stat"><div class="label">Офлайн</div><strong id="offline">0</strong></div>
-<div class="stat"><div class="label">Режим</div><strong style="font-size:20px">Monitoring</strong></div></div>
-<div class="panel"><div class="panel-head"><strong>Подключённые агенты</strong>
-<span id="updated">Загрузка…</span></div><div class="table-scroll">
-<table><thead><tr><th>Агент</th><th>Адрес Telemt</th><th>Порт</th><th>Последний сигнал</th><th>Состояние</th><th></th></tr></thead>
-<tbody id="agents"></tbody></table></div><div id="empty" class="empty">Агентов пока нет. Добавьте первый сервер.</div></div>
-</main></div>
-<div id="modal" class="modal"><div class="dialog">
-<h2 id="dialogTitle">Добавить агента</h2><p id="dialogDesc">Создайте одноразовый код подключения, затем зарегистрируйте агент на сервере.</p>
-<div id="dialogBody"></div><div class="dialog-actions"><button class="btn secondary" id="close">Закрыть</button><button class="btn" id="action">Создать код</button></div>
-</div></div><div id="toast"></div>
-<script>
-const $ = id => document.getElementById(id);
-let activeAgent = null;
-const api = async (path, options={}) => {
-  const response = await fetch(path, {headers:{"Content-Type":"application/json"},...options});
-  const text = await response.text(); let data;
-  try { data = JSON.parse(text); } catch { throw Error("Ошибка ответа сервера"); }
-  if(!response.ok) throw Error(data.detail || "HTTP " + response.status);
-  return data;
-};
-function showToast(m){$("toast").textContent=m;$("toast").style.display="block";setTimeout(()=>$("toast").style.display="none",4500)}
-function modal(title,desc){$("dialogTitle").textContent=title;$("dialogDesc").textContent=desc;$("modal").classList.add("show");$("dialogBody").replaceChildren();$("action").style.display="inline-block"}
-function node(tag,text,cls){const e=document.createElement(tag);e.textContent=text;if(cls)e.className=cls;return e}
-function field(label, value){const d=node("div","","detail-row");d.append(node("span",label),node("span",String(value||"—")));return d}
-async function refresh(){
-  try{
-    const [overview,agents]=await Promise.all([api("/api/overview"),api("/api/agents")]);
-    ["total","online","offline"].forEach(k=>$(k).textContent=overview[k]);
-    $("agents").replaceChildren();$("empty").style.display=agents.length?"none":"block";
-    for(const a of agents){
-      const tr=document.createElement("tr");
-      const cell1=document.createElement("td");cell1.append(node("div",a.name,"name"),node("div",a.id.slice(0,8),"muted mono"));
-      tr.append(cell1,node("td",a.public_host||"Не определён","mono"),node("td",String(a.proxy_port),"mono"),
-        node("td",a.last_seen?new Date(a.last_seen).toLocaleString("ru-RU"):"—","muted"));
-      const stat=document.createElement("td");stat.append(node("span",a.online?"Онлайн":"Офлайн","badge "+(a.online?"online":"offline")));tr.append(stat);
-      const btn=document.createElement("button");btn.className="action";btn.textContent="Подробнее";btn.onclick=()=>details(a);
-      const td=document.createElement("td");td.append(btn);tr.append(td);$("agents").append(tr);
-    }
-    $("updated").textContent="Обновлено: "+new Date().toLocaleTimeString("ru-RU");
-  }catch(e){showToast(e.message)}
-}
-$("add").onclick=()=>{
- modal("Новый агент","Название сохранится в базе Commander. Одноразовый ключ действует 15 минут.");
- const w=node("div","","field");w.append(node("label","Название агента"));
- const input=document.createElement("input");input.id="agentName";input.placeholder="PL-Telemt-01";input.maxLength=100;w.append(input);$("dialogBody").append(w);
- $("action").textContent="Создать код";
- $("action").onclick=async()=>{
-   try {
-    const a=await api("/api/enrollments",{method:"POST",body:JSON.stringify({name:input.value})});
-    $("dialogBody").replaceChildren();
-    $("dialogBody").append(node("p","Сохраните одноразовый ключ и выполните команду enroll после установки агента. Команду нужно запускать на целевом VPS."));
-    const pre=node("pre","AUTOIP_COMMANDER_URL=https://YOUR-COMMANDER-DOMAIN AUTOIP_ENROLL_TOKEN="+a.token+" python -m agent.main enroll");
-    $("dialogBody").append(pre);
-    const b=node("button","Скопировать команду","btn secondary");b.onclick=()=>navigator.clipboard.writeText(pre.textContent);
-    $("dialogBody").append(b);$("action").style.display="none";
-    refresh();
-   }catch(e){showToast(e.message)}
- }
-};
-function details(a){
- activeAgent=a;
- modal(a.name,"Данные поступают напрямую от агента. Команды, меняющие сеть, отключены.");
- const b=$("dialogBody");b.append(field("Agent ID",a.id),field("Адрес Telemt",a.public_host),field("Порт",a.proxy_port),
- field("Hostname",a.facts.hostname),field("ОС",a.facts.os),field("Telemt",a.facts.telemt_version),
- field("Telemt service",a.facts.telemt_service),field("Пауза",a.paused?"Да":"Нет"));
- const actions=node("div","","dialog-actions");
- const status=node("button","Запросить статус","btn secondary");status.onclick=async()=>{try{await api("/api/agents/"+a.id+"/jobs",{method:"POST",body:JSON.stringify({kind:"status"})});showToast("Задание отправлено")}catch(e){showToast(e.message)}};
- const check=node("button","Проверить из РФ","btn secondary");check.onclick=async()=>{showToast("Запущена проверка...");try{const r=await api("/api/agents/"+a.id+"/check",{method:"POST"});showToast("Проверка: "+r.status)}catch(e){showToast(e.message)}};
- const pause=node("button",a.paused?"Возобновить":"Приостановить","btn secondary");pause.onclick=async()=>{try{await api("/api/agents/"+a.id+"/pause",{method:"POST"});$("modal").classList.remove("show");refresh()}catch(e){showToast(e.message)}};
- const configure=node("button","Настройки агента","btn secondary");configure.onclick=()=>editConfiguration(a);actions.append(status,check,pause,configure);b.append(actions);
- const output=node("pre","Загрузка последних заданий...");
- b.append(output);
- api("/api/agents/"+a.id+"/jobs").then(jobs=>output.textContent=JSON.stringify(jobs,null,2)).catch(e=>output.textContent=e.message);
- $("action").style.display="none";
-}
-async function editConfiguration(a){
-  modal("Настройки: "+a.name,"Параметры сохраняются на Commander. Ключи API и пароли в этих полях не сохраняйте.");
-  try{
-    const saved=await api("/api/agents/"+a.id+"/configuration");
-    const schema=[
-      ["provider","Провайдер (cherry или other)"],
-      ["region","Регион"],
-      ["cherry_project_id","Cherry Project ID"],
-      ["cherry_server_id","Cherry Server ID"],
-      ["sponsor_channel","Ссылка публичного Telegram-канала"],
-      ["max_candidates_per_incident","Максимум IP на инцидент"],
-      ["notes","Примечания"]
-    ];
-    const inputs={};
-    for(const [key,title] of schema){
-      const wrapper=node("div","","field");wrapper.append(node("label",title));
-      const input=document.createElement("input");input.value=saved[key]??"";input.type=key==="max_candidates_per_incident"?"number":"text";inputs[key]=input;
-      wrapper.append(input);$("dialogBody").append(wrapper);
-    }
-    $("action").style.display="inline-block";$("action").textContent="Сохранить";
-    $("action").onclick=async()=>{
-      try{
-        const payload={};
-        for(const [key] of schema)payload[key]=key==="max_candidates_per_incident"?Number(inputs[key].value):inputs[key].value.trim();
-        const response=await api("/api/agents/"+a.id+"/configuration",{method:"PUT",body:JSON.stringify(payload)});
-        showToast("Настройки сохранены");
-        $("modal").classList.remove("show");refresh();
-      }catch(e){showToast(e.message)}
-    };
-  }catch(e){showToast(e.message)}
-}
-$("close").onclick=()=>{$("modal").classList.remove("show");$("action").onclick=null};
-$("modal").onclick=e=>{if(e.target===$("modal"))$("modal").classList.remove("show")};
-refresh();setInterval(refresh,15000);
-</script></body></html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>AutoIP Commander</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <div id="login" class="login" hidden>
+      <form class="dialog" id="loginForm">
+        <div class="brand">AUTO<b>IP</b><span>COMMANDER</span></div>
+        <h2>Вход в панель</h2>
+        <p>Управление прокси и мониторингом.</p>
+        <div class="field">
+          <label for="username">Логин</label
+          ><input id="username" autocomplete="username" required />
+        </div>
+        <div class="field">
+          <label for="password">Пароль</label
+          ><input
+            id="password"
+            type="password"
+            autocomplete="current-password"
+            required
+          />
+        </div>
+        <div class="field">
+          <label for="otp">Код 2FA, если включён</label
+          ><input
+            id="otp"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            maxlength="6"
+          />
+        </div>
+        <p id="loginError" class="error" role="alert"></p>
+        <button class="btn" type="submit">Войти</button>
+      </form>
+    </div>
+    <div id="workspace" class="layout" hidden>
+      <aside>
+        <div class="brand">AUTO<b>IP</b><span>COMMANDER</span></div>
+        <nav id="navigation" aria-label="Разделы панели"></nav>
+        <div class="sidebar-footer">
+          Исходящие соединения<br />Изолированное управление
+        </div>
+      </aside>
+      <main>
+        <header>
+          <div>
+            <div class="section-caption">Центр управления</div>
+            <h1 id="pageTitle">Обзор</h1>
+            <p class="subtitle" id="pageDescription"></p>
+          </div>
+          <div class="toolbar">
+            <button class="btn secondary" id="refresh">Обновить</button
+            ><button class="btn" id="add">+ Добавить агента</button
+            ><button class="action" id="logout">Выйти</button>
+          </div>
+        </header>
+        <div class="notice">
+          Автоматическая замена IP выполняется только для агентов с явно
+          разрешённой автоматизацией. Текущий режим указан в настройках агента.
+        </div>
+        <div id="screen" aria-live="polite"></div>
+      </main>
+    </div>
+    <div
+      id="modal"
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="dialogTitle"
+    >
+      <div class="dialog">
+        <h2 id="dialogTitle"></h2>
+        <p id="dialogDesc"></p>
+        <div id="dialogBody"></div>
+        <div class="dialog-actions">
+          <button class="btn secondary" id="close">Закрыть</button
+          ><button class="btn" id="action">Сохранить</button>
+        </div>
+      </div>
+    </div>
+    <div id="toast" role="status"></div>
+  </body>
+</html>

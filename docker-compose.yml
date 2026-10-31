@@ -1,3 +1,36 @@
+name: autoip
+x-environment: &environment
+  AUTOIP_ADMIN_USER: ${AUTOIP_ADMIN_USER:-admin}
+  AUTOIP_ADMIN_PASSWORD: ${AUTOIP_ADMIN_PASSWORD:?Set a unique administrator password}
+  AUTOIP_DATABASE_URL: postgresql+psycopg://autoip:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/autoip
+  AUTOIP_DISPLAY_TIMEZONE: ${AUTOIP_DISPLAY_TIMEZONE:-UTC}
+  AUTOIP_AGENT_GIT_REF: ${AUTOIP_AGENT_GIT_REF:-main}
+  AUTOIP_PUBLIC_URL: ${AUTOIP_PUBLIC_URL:-}
+  AUTOIP_VAULT_KEY_FILE: /run/secrets/autoip-vault-key
+  AUTOIP_TOTP_SECRET_FILE: ${AUTOIP_TOTP_SECRET_FILE:-}
+  AUTOIP_TELEGRAM_ADMIN_IDS: ${AUTOIP_TELEGRAM_ADMIN_IDS:-[]}
+  AUTOIP_MONITOR_ENABLED: ${AUTOIP_MONITOR_ENABLED:-false}
+  AUTOIP_MONITOR_INTERVAL_SECONDS: ${AUTOIP_MONITOR_INTERVAL_SECONDS:-300}
+  FORWARDED_ALLOW_IPS: ${AUTOIP_TRUSTED_PROXY_IPS:-127.0.0.1}
+x-application: &application
+  image: autoip-commander:local
+  build:
+    context: .
+    dockerfile: commander/Dockerfile
+  environment: *environment
+  volumes:
+    - ${AUTOIP_VAULT_KEY_FILE:-./secrets/master.key}:/run/secrets/autoip-vault-key:ro
+  networks: [control]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  read_only: true
+  tmpfs: ["/tmp:size=64m,mode=1777"]
+  init: true
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
 services:
   db:
     image: postgres:16-alpine
@@ -5,31 +38,64 @@ services:
     environment:
       POSTGRES_DB: autoip
       POSTGRES_USER: autoip
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    networks: [control]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U autoip -d autoip"]
+      test: [CMD-SHELL, 'pg_isready -U autoip -d autoip']
       interval: 5s
       timeout: 3s
       retries: 10
+  migrate:
+    <<: *application
+    command: [python, -m, commander.manage, migrate]
+    restart: 'no'
+    depends_on:
+      db:
+        condition: service_healthy
   commander:
-    build:
-      context: .
-      dockerfile: commander/Dockerfile
+    <<: *application
     restart: unless-stopped
+    ports: ['127.0.0.1:${AUTOIP_BIND_PORT:-18080}:8080']
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+  worker:
+    <<: *application
+    command: [python, -m, commander.worker]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  bot:
+    <<: *application
+    profiles: [telegram]
+    command: [python, -m, commander.bot]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  telegram-login:
+    <<: *application
     environment:
-      AUTOIP_ADMIN_USER: ${AUTOIP_ADMIN_USER:-admin}
-      AUTOIP_ADMIN_PASSWORD: ${AUTOIP_ADMIN_PASSWORD:?Set AUTOIP_ADMIN_PASSWORD in .env}
-      AUTOIP_DATABASE_URL: postgresql+psycopg://autoip:${POSTGRES_PASSWORD}@db:5432/autoip
-      AUTOIP_TELEGRAM_BOT_TOKEN: ${AUTOIP_TELEGRAM_BOT_TOKEN:-}
-      AUTOIP_TELEGRAM_CHAT_ID: ${AUTOIP_TELEGRAM_CHAT_ID:-}
-      AUTOIP_MONITOR_ENABLED: ${AUTOIP_MONITOR_ENABLED:-false}
-      AUTOIP_MONITOR_INTERVAL_SECONDS: ${AUTOIP_MONITOR_INTERVAL_SECONDS:-180}
-    ports:
-      - "127.0.0.1:8080:8080"
+      <<: *environment
+      AUTOIP_PRIVATE_LOGIN_TERMINAL: 'true'
+    profiles: [setup]
+    command: [python, -m, commander.manage, telethon-login]
+    restart: 'no'
+    stdin_open: true
+    tty: true
+    logging:
+      driver: none
     depends_on:
       db:
         condition: service_healthy
 volumes:
   postgres_data:
+networks:
+  control:

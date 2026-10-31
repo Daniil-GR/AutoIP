@@ -1,59 +1,74 @@
-# AutoIP — Commander + Multi-Agent
+# AutoIP — Commander + Agent
 
-A central control plane for multiple Linux servers running Telemt (MTProto proxy), with a Russian-language web panel and outbound-polling agents.
+Централизованное управление несколькими серверами Telemt. Русская панель, aiogram 3 бот администратора, защищённые интеграции, регистрация агентов, мониторинг и постоянные инциденты.
 
-**Status: runnable early MVP (v0.1), monitoring-only. NOT production-ready.** No automatic Floating IP purchases, DNS changes, block decisions, Telegram sponsorship or automatic recovery. Code intentionally cannot trigger billable IP operations.
+**v0.2, этап разработки. Платные операции и запись DNS по умолчанию отключены; отдельно согласованный [платный режим](docs/paid-recovery.md) включается для конкретного агента. Отдельно согласованный одиночный пилот покупки/Attach и добавления IP проверен: [результаты](docs/floating-ip-pilot.md). Режим [перехода на существующий резерв](docs/reserve-recovery.md) проверен на реальной блокировке после подтверждения владельца; по умолчанию он отключён и не разрешает новые покупки. Полный финансовый цикл восстановления не готов к production.** Подробный проверенный статус и ограничения: [docs/IMPLEMENTATION_STATUS_RU.md](docs/IMPLEMENTATION_STATUS_RU.md).
 
-## Implemented
+## Развёртывание
 
-- Commander: FastAPI, PostgreSQL (Docker Compose), Basic-auth protected web panel and dashboard.
-- One-time enrollment tokens (15 minutes), unique machine identity, hashed agent credentials, outbound HTTPS authentication, heartbeat and detected Telemt information.
-- Agent polling and allowlisted jobs: status; optional disabled-by-default local ad-tag write helper.
-- Read-only Check-Host TCP measurements, recording raw results with an UNKNOWN state rather than automated block judgement.
-- Recent jobs and checks for each agent; pause and manual check API.
+Читайте [docs/deployment.md](docs/deployment.md). Не запускайте установщик Agent на действующем прокси без согласования. Commander по умолчанию слушает только `127.0.0.1:18080`, использует отдельный Compose project `autoip`; PostgreSQL не публикуется на хосте.
 
-## Repository layout
+1. Создайте закрытую `.env` и мастер-ключ по инструкции.
+2. `docker compose up -d --build` запускает только PostgreSQL, миграции, API и worker.
+3. Подключите HTTPS на выделенном домене после проверки существующего reverse proxy.
+4. Добавьте ключи через защищённую форму или `python -m commander.manage integration cherry`. Ввод секретов скрыт.
+5. Для бота сохраните интеграцию `telegram_bot` и разрешённые User ID. Затем отдельно запускайте `docker compose --profile telegram up -d bot`.
 
-- commander/ — API, database, monitoring, panel.
-- agent/ — lightweight outbound agent and restricted Telemt config helper.
-- docs/ — setup, architecture, security and remaining work.
-- tests/ — regression tests.
+Никогда не коммитьте `.env`, `secrets/`, Telethon session или резервные копии. Мастер-ключ хранится отдельно от PostgreSQL; без него восстановление ключей интеграций невозможно.
 
-## Start Commander
+## Агенты
 
-1. Install Docker Engine and the Compose plugin.
-2. Clone to Commander VPS.
-3. Copy .env.example to .env.
-4. Set unique strong AUTOIP_ADMIN_PASSWORD and POSTGRES_PASSWORD. No real credentials in Git.
-5. Run: docker compose up -d --build
-6. Local port 127.0.0.1:8080 is loopback-only. Put HTTPS reverse proxy in front with rate limiting.
-7. Open HTTPS panel and sign in. Monitoring defaults to disabled until manually enabled.
+Подготовка второй схемы — польские VPS через Telegram Node Host:
+[реализованные части, ограничения и команды](docs/nodehost-v2.md).
+Автоматическая замена целого VPS пока не включена.
 
-HTTP Basic is an MVP mechanism, not final account management.
+Мастер «Добавить агента» создаёт одноразовый код на 15 минут и показывает команду. Код вводится локально скрытым запросом `enroll-local`; его не требуется вставлять в командную строку. У агента исходящее HTTPS-соединение. Основной IP и маршруты AutoIP при подключении не меняет. См. [docs/agent-installation.md](docs/agent-installation.md).
 
-## Add agent
+В настройках Commander можно сохранить DNS-зону по умолчанию. Она копируется в настройки нового агента при регистрации; смена значения не затрагивает существующих агентов. Полное имя поддомена задаётся отдельно. Эти настройки не выполняют запись в DNS.
 
-1. Select Добавить агента, enter name, create one-time key.
-2. On a Telemt VPS clone this repository to /opt/AutoIP and follow docs/agent-installation.md.
-3. Configure HTTPS Commander URL; run enrollment as agent service user.
-4. Start systemd agent service; it connects outward every 20 seconds.
+## Ограничение DNS
 
-Do not use replaceable Floating IP for management.
+AutoIP работает только с поддоменами `vetka.rest`; первая нода — `lt.vetka.rest`. Другие домены аккаунта Dynadot не запрашиваются и не используются. Корневая запись `vetka.rest` исключена из изменения. Ограничение проверяется сервером в настройках, планировании DNS и адаптере Dynadot. Автоматическая запись DNS отключена. Для отдельно согласованного локального теста реализован точечный [DNS-пилот с возвратом](docs/dns-pilot.md), без перезаписи зоны.
 
-## Safety
+## Мониторинг
 
-- Do not install on production before evaluating access, networking and Telemt file permissions.
-- Automatic IP operations are not implemented. There is no live Cherry Servers or Dynadot workflow yet.
-- Telemt helper only supports apply-ad-tag and is never automatically granted sudo privileges.
-- No secrets in Git. This repository currently may be public.
-- Check-Host TCP alone cannot confirm MTProto functionality or censorship.
-- Backend create_all is an MVP shortcut. Database migrations needed before upgrades.
-- See docs/roadmap.md.
+Обычный интервал — 5 минут. Check-Host проверяет TCP MTProto и отдельно HTTPS веб-адреса; MTProto Checker проверяет хендшейк и данные MTProto из RU и внешней точки. RIPE Atlas — дополнительная TLS/SNI-диагностика при недоступном или неопределённом ответе основного источника, с отдельным разрешением кредитов и часовым ограничением. Секреты вводятся только через защищённую панель или локально.
 
-## Tests
+## Проверки
 
-Install Python requirements and pytest, then run pytest -q. Set AUTOIP_ADMIN_PASSWORD to a test password with at least 12 characters.
+Python 3.12+. В отдельном virtualenv:
 
-## License
+```sh
+pip install -r commander/requirements.txt -r agent/requirements.txt -r requirements-dev.txt
+python -m pytest -q
+python -m compileall -q commander agent migrations
+node --check commander/static/app.js
+```
 
-No license is granted until repository owner explicitly chooses one.
+Тесты сами создают временные SQLite БД. Настоящий PostgreSQL проверяется отдельно на пустой БД `autoip_test` через `AUTOIP_TEST_POSTGRES_URL`. Браузерные файлы устанавливаются только в каталог AutoIP:
+
+```sh
+export PLAYWRIGHT_BROWSERS_PATH="$PWD/.local-test/playwright-browsers"
+export PLAYWRIGHT_SKIP_BROWSER_GC=1
+playwright install chromium
+python scripts/browser-smoke.py
+```
+
+Сценарий поднимает и удаляет собственный Commander на случайном loopback-порту, не вызывает провайдеров. Не используйте общий браузерный кэш других проектов.
+
+Обновление v0.1: сначала backup, затем `python -m commander.manage adopt-v01` на копии БД. Обычный старт больше не использует `create_all`.
+
+## Журналы
+
+История действий и ошибок доступна в панели и хранится в PostgreSQL.
+Неожиданные ошибки получают error_id для сопоставления с логами сервисов.
+Где искать записи и какие данные исключены: [docs/logging.md](docs/logging.md).
+
+## Поддомены CDN из Telegram
+
+Меню бота **Поддомены CDN** добавляет свободное имя к существующему ресурсу Gcore,
+создаёт CNAME только в `vetka.rest`, ожидает TLS, применяет имя в Nginx/Telemt
+и проверяет авторизацию WEB через CDN. Изменения требуют подтверждения в боте;
+возможен краткий перезапуск Telemt. Нужна однократная привязка существующих
+интеграций и закреплённого SSH-доступа. Порядок и границы проверок:
+[docs/cdn-domains.md](docs/cdn-domains.md).

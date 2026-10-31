@@ -1,0 +1,258 @@
+import ipaddress
+import re
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .dns_scope import managed_record, managed_zone
+from .proxy_modes import ProxyMode, DEFAULT_MODE, FAKETLS_MODE, FAKETLS_SNI
+
+
+class AgentConfiguration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: Literal["cherry", "nodehost", "other"] = "cherry"
+    proxy_mode: ProxyMode = DEFAULT_MODE
+    monitoring_mode: Literal["direct_mtproto", "cdn_web"] = "direct_mtproto"
+    vps_profile_integration_id: str = ""
+    region: str = Field(default="", max_length=80)
+    management_ip: str = ""
+    proxy_ip: str = ""
+    floating_ip: str = ""
+    cherry_integration_id: str = ""
+    cherry_project_id: str = Field(default="", max_length=100)
+    cherry_server_id: str = Field(default="", max_length=100)
+    dns_integration_id: str = ""
+    sni_domain: str = Field(default="", max_length=253)
+    dns_zone: str = Field(default="", max_length=253)
+    dns_record: str = Field(default="", max_length=253)
+    telethon_integration_id: str = ""
+    mtproto_integration_id: str = ""
+    checker_integration_id: str = ""
+    ripe_atlas_integration_id: str = ""
+    mtproto_secret_format: Literal["dd", "ee"] = "dd"
+    web_proxy_host: str = Field(default="", max_length=253)
+    web_proxy_port: int = Field(default=443, ge=1, le=65535)
+    sponsor_channel: str = Field(default="", max_length=250)
+    notes: str = Field(default="", max_length=800)
+    max_candidates_per_incident: int = Field(default=3, ge=1, le=10)
+    max_ips_per_day: int = Field(default=6, ge=0, le=100)
+    max_billed_ips: int = Field(default=2, ge=1, le=10)
+    monthly_budget_cents: int = Field(default=0, ge=0, le=10000000)
+    automation_mode: Literal["manual", "paused"] = "manual"
+
+    @model_validator(mode="after")
+    def protocol_settings(self):
+        if self.monitoring_mode == "cdn_web" and self.proxy_mode == FAKETLS_MODE:
+            raise ValueError("Обычный HTTP CDN не поддерживает MTProto FakeTLS")
+        if self.proxy_mode == FAKETLS_MODE:
+            if self.web_proxy_host:
+                raise ValueError("В режиме MTProto FakeTLS нет веб-прокси")
+            if self.sni_domain and self.sni_domain != FAKETLS_SNI:
+                raise ValueError("Установщик FakeTLS использует SNI www.booking.com")
+            self.sni_domain = FAKETLS_SNI
+            self.mtproto_secret_format = "ee"
+        return self
+
+    @field_validator("dns_zone")
+    @classmethod
+    def scoped_dns_zone(cls, value):
+        return managed_zone(value)
+
+    @field_validator("dns_record")
+    @classmethod
+    def scoped_dns_record(cls, value):
+        return managed_record(value)
+
+    @field_validator("web_proxy_host")
+    @classmethod
+    def web_host(cls, value):
+        from .monitor import valid_target
+
+        value = value.strip().lower()
+        if value and not valid_target(value, 443):
+            raise ValueError("Требуется публичный адрес веб-прокси")
+        return value
+
+    @field_validator("management_ip", "proxy_ip", "floating_ip")
+    @classmethod
+    def valid_ip(cls, value):
+        if value:
+            addr = ipaddress.ip_address(value)
+            if addr.version != 4 or not addr.is_global:
+                raise ValueError("Требуется публичный IPv4")
+        return value
+
+    @field_validator("sponsor_channel")
+    @classmethod
+    def channel(cls, value):
+        if value and not re.fullmatch(
+            r"(?:https://t\.me/|@)[A-Za-z][A-Za-z0-9_]{3,31}", value
+        ):
+            raise ValueError("Требуется публичный Telegram-канал")
+        return value
+
+
+class IntegrationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=2, max_length=100)
+    kind: Literal[
+        "cherry",
+        "gcore",
+        "dynadot",
+        "telegram_bot",
+        "telethon",
+        "ripe_atlas",
+        "mtproto",
+        "mtproto_checker",
+        "vps_access",
+        "telemt_profile",
+    ]
+    credentials: dict[str, str] = Field(repr=False)
+    metadata: dict = Field(default_factory=dict)
+
+    @field_validator("credentials")
+    @classmethod
+    def bounded(cls, value):
+        if len(value) > 6 or any(len(v) > 8192 for v in value.values()):
+            raise ValueError("Слишком большой набор ключей")
+        return value
+
+    def validate_keys(self):
+        if self.metadata:
+            raise ValueError(
+                "Произвольные метаданные интеграции пока не поддерживаются"
+            )
+        if self.kind == "telemt_profile":
+            if set(self.credentials) - {
+                "domain",
+                "secret",
+                "ad_tag",
+                "proxy_mode",
+            } or not {"domain", "secret", "ad_tag"} <= set(self.credentials):
+                raise ValueError("Нужны domain, secret и ad_tag")
+            from .proxy_modes import mode_settings
+
+            mode_settings(self.credentials.get("proxy_mode", DEFAULT_MODE))
+            domain = managed_record(self.credentials["domain"])
+            if not domain or not all(
+                re.fullmatch(r"[a-f0-9]{32}", self.credentials[k])
+                for k in ("secret", "ad_tag")
+            ):
+                raise ValueError(
+                    "Нужны поддомен vetka.rest и профиль из 32 hex-символов"
+                )
+            self.credentials["domain"] = domain
+            return
+        if self.kind == "vps_access":
+            if set(self.credentials) != {"ipv4", "username", "password"}:
+                raise ValueError("Нужны ipv4, username и password")
+            if (
+                not ipaddress.IPv4Address(self.credentials["ipv4"]).is_global
+                or self.credentials["username"] != "root"
+                or not 1 <= len(self.credentials["password"]) <= 512
+            ):
+                raise ValueError("Неверные данные VPS")
+            return
+        if self.kind == "telethon":
+            allowed = {"api_id", "api_hash", "phone", "session"}
+            if set(self.credentials) - allowed:
+                raise ValueError("Неизвестные поля Telegram-интеграции")
+            api_id = self.credentials.get("api_id", "")
+            if not api_id.isdigit() or not 0 < int(api_id) < 2**31:
+                raise ValueError("Некорректный Telegram api_id")
+            if not re.fullmatch(
+                r"[a-fA-F0-9]{32}", self.credentials.get("api_hash", "")
+            ):
+                raise ValueError("Некорректный Telegram api_hash")
+            phone = self.credentials.get("phone", "")
+            if phone and not re.fullmatch(r"\+[1-9][0-9]{6,14}", phone):
+                raise ValueError("Телефон должен иметь международный формат")
+            if not self.credentials.get("session") and not phone:
+                raise ValueError(
+                    "Нужны телефон для локальной авторизации или готовая StringSession"
+                )
+            return
+        keys = {
+            "gcore": {"api_key"},
+            "cherry": {"api_key"},
+            "dynadot": {"api_key", "api_secret"},
+            "telegram_bot": {"token"},
+            "ripe_atlas": {"api_key"},
+            "mtproto": {"secret"},
+            "mtproto_checker": {"api_key"},
+        }[self.kind]
+        if set(self.credentials) != keys or not all(self.credentials.values()):
+            raise ValueError("Необходимы поля: " + ", ".join(sorted(keys)))
+        if self.kind == "gcore" and (
+            len(self.credentials["api_key"]) < 12
+            or any(not 33 <= ord(c) <= 126 for c in self.credentials["api_key"])
+        ):
+            raise ValueError(
+                "Токен Gcore не должен содержать пробелы или переносы строк"
+            )
+        if self.kind == "mtproto" and not re.fullmatch(
+            r"[a-fA-F0-9]{32}", self.credentials["secret"]
+        ):
+            raise ValueError("Секрет MTProto должен содержать 32 hex-символа")
+
+
+SAFE_FACTS = {
+    "hostname",
+    "os",
+    "telemt_version",
+    "telemt_service",
+    "config_found",
+    "config_readable",
+    "ad_tag_present",
+    "middle_proxy_nat_ip_set",
+    "middle_proxy_nat_ip",
+    "interfaces",
+    "routes",
+    "listeners",
+    "tls_domain",
+    "outbound_bind_configured",
+    "mtproto_fix_present",
+}
+
+
+def safe_facts(facts):
+    # Never accept an arbitrary config or credentials in agent inventory.
+    import json
+
+    clean = {k: v for k, v in facts.items() if k in SAFE_FACTS}
+    if len(json.dumps(clean)) > 32768:
+        raise ValueError("Слишком большой отчёт агента")
+    return clean
+
+
+class CommanderPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    default_dns_zone: str = Field(default="", max_length=253)
+    monitor_enabled: bool = False
+    atlas_fallback_enabled: bool = False
+    monitor_interval_seconds: int = Field(default=300, ge=30, le=86400)
+    telegram_admin_ids: list[int] = Field(default_factory=list, max_length=20)
+    monthly_budget_cents: int = Field(default=0, ge=0, le=10000000)
+    account_budget_cents: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("default_dns_zone")
+    @classmethod
+    def dns_zone(cls, value):
+        return managed_zone(value)
+
+    @field_validator("telegram_admin_ids")
+    @classmethod
+    def admin_ids(cls, values):
+        if any(value <= 0 for value in values):
+            raise ValueError("Требуется положительный Telegram User ID")
+        return sorted(set(values))
+
+    @field_validator("account_budget_cents")
+    @classmethod
+    def budgets(cls, values):
+        if (
+            any(value < 0 or value > 10000000 for value in values.values())
+            or len(values) > 100
+        ):
+            raise ValueError("Некорректный бюджет")
+        return values

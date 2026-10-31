@@ -1,16 +1,14 @@
-# Roadmap — not yet implemented
+# Оставшаяся работа
 
-This repository is an early MVP, NOT the completed AutoIP platform.
+Выполненные и проверенные функции перечислены в `IMPLEMENTATION_STATUS_RU.md`.
 
-1. Harden commander authentication: reverse proxy TLS, rate limits, audited logins, 2FA, roles, CSRF-safe sessions.
-2. Harden agents: approval, revocation, key rotation, durable command deduplication, typed events, strict privileges.
-3. Monitoring: parse Check-Host results into tri-state, connect second independent provider, actual RU MTProto probes.
-4. Incidents: manual approve/deny, delayed rechecks at 15/20/25 min and Telegram inline callbacks.
-5. Cherry integration: inventory, IP acquisition, assignment, source-bound limits, budget, reconciliation; never delete unmanaged IP.
-6. Agent network helper: allowlisted address operations with route safety and timed rollback.
-7. DNS provider: authoritative NS validation, non-destructive per-record updates and TTL verification.
-8. Sponsorship: separate Telethon session to @MTProxybot, ordered per-account dialogs, tag application/verification.
-9. Fully repeatable recovery integration tests and dry-run simulation across agents.
-10. Database migrations, backup/restore, metrics, CI, docs and staging before production enablement.
+1. Подключить новый Cherry Agent, проверить Telemt и сеть без изменений основного Management IP.
+2. Подключить независимый второй источник и реальные MTProto проверки; SNI/TCP диагностика не заменяет их.
+3. Реализовать/проверить финансовое резервирование, reconciliation неоднозначных покупок и managed ownership.
+4. Провести сетевой пилот с постоянным таймером отката, переживающим перезагрузку и потерю связи.
+5. Согласовать DNS-механизм с сохранением зоны и защитой от параллельных изменений; legacy full-zone write не применять автоматически.
+6. Авторизовать выделенный Telegram-аккаунт и проверить диалог MTProxybot, сериализацию и hot reload конкретного Telemt.
+7. Проверить весь recovery цикл, частичные отказы, TTL/grace period, рестарт на каждом шаге, бюджеты и реальные счета.
+8. Настроить HTTPS, обязательную 2FA, backup/restore drill и наблюдение сервисов перед эксплуатацией.
 
-Never enable live purchases as part of this MVP.
+Оплачиваемые и разрушительные операции — только после отдельного подтверждения владельца.

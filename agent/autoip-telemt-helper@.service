@@ -1,0 +1,18 @@
+[Unit]
+Description=AutoIP restricted Telemt config helper
+[Service]
+Type=exec
+User=root
+ExecStart=/opt/AutoIP/.venv/bin/python -m agent.telemt_helper serve-one
+WorkingDirectory=/opt/AutoIP
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/telemt
+PrivateTmp=true
+PrivateNetwork=true
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_FOWNER
+TimeoutStartSec=20

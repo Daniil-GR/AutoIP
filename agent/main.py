@@ -1,5 +1,9 @@
 """AutoIP Agent: outbound polling, no remote shell and no destructive commands."""
-import hashlib
+
+import getpass
+import pwd
+import socket
+import sqlite3
 import json
 import os
 import platform
@@ -15,35 +19,160 @@ from uuid import uuid4
 import httpx
 
 COMMANDER = os.environ.get("AUTOIP_COMMANDER_URL", "").rstrip("/")
-STATE_PATH = Path(os.environ.get("AUTOIP_STATE_PATH", "/var/lib/autoip-agent/identity.json"))
+STATE_PATH = Path(
+    os.environ.get("AUTOIP_STATE_PATH", "/var/lib/autoip-agent/identity.json")
+)
 TELEMT_PATH = Path(os.environ.get("AUTOIP_TELEMT_CONFIG", "/etc/telemt/telemt.toml"))
-ALLOW_AD_TAG_WRITE = os.environ.get("AUTOIP_ALLOW_AD_TAG_WRITE", "false").lower() == "true"
+ALLOW_AD_TAG_WRITE = (
+    os.environ.get("AUTOIP_ALLOW_AD_TAG_WRITE", "false").lower() == "true"
+)
 
 
 def check_transport():
-    if not (COMMANDER.startswith("https://") or COMMANDER.startswith("http://127.0.0.1:") or COMMANDER.startswith("http://localhost:")):
+    from urllib.parse import urlsplit
+
+    try:
+        parsed = urlsplit(COMMANDER)
+        _ = parsed.port
+    except ValueError:
+        raise RuntimeError("Invalid Commander URL") from None
+    if (
+        not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in ("", "/")
+    ):
+        raise RuntimeError("Invalid Commander URL")
+    if parsed.scheme != "https" and not (
+        parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")
+    ):
         raise RuntimeError("Commander URL must use HTTPS outside localhost")
 
 
 def run(args, timeout=5):
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+        result = subprocess.run(
+            args, capture_output=True, text=True, timeout=timeout, check=False
+        )
         return result.stdout.strip()[:180] or result.stderr.strip()[:180]
     except (OSError, subprocess.TimeoutExpired):
         return "unavailable"
 
 
-def facts():
-    result = {"hostname": platform.node(), "os": platform.platform(),
-              "telemt_version": run(["telemt", "--version"]),
-              "telemt_service": run(["systemctl", "is-active", "telemt"]),
-              "config_found": TELEMT_PATH.is_file()}
+def helper_request(operation, **payload):
+    return local_request(
+        "/run/autoip-telemt-helper.sock", {"operation": operation, **payload}
+    )
+
+
+def local_request(path, payload):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(90)
+        client.connect(path)
+        client.sendall(json.dumps(payload).encode() + b"\n")
+        data = b""
+        while not data.endswith(b"\n") and len(data) < 65536:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        result = json.loads(data)
+        if not result.get("ok"):
+            raise RuntimeError("Privileged helper rejected request")
+        return result["result"]
+
+
+def read_config_facts():
     try:
         cfg = tomllib.loads(TELEMT_PATH.read_text())
-        result["ad_tag_present"] = bool(cfg.get("general", {}).get("ad_tag"))
-        result["middle_proxy_nat_ip_set"] = bool(cfg.get("general", {}).get("middle_proxy_nat_ip"))
+        return config_facts(cfg)
     except (OSError, ValueError):
-        pass
+        try:
+            return helper_request("inspect")
+        except (OSError, ValueError, RuntimeError):
+            return {"config_readable": False}
+
+
+def config_facts(cfg):
+    general = cfg.get("general", {})
+    listeners = cfg.get("server", {}).get("listeners", [])
+    return {
+        "tls_domain": cfg.get("censorship", {}).get("tls_domain"),
+        "config_readable": True,
+        "public_host": general.get("links", {}).get("public_host"),
+        "proxy_port": cfg.get("server", {}).get("port", 443),
+        "ad_tag_present": bool(general.get("ad_tag")),
+        "middle_proxy_nat_ip_set": bool(general.get("middle_proxy_nat_ip")),
+        "middle_proxy_nat_ip": general.get("middle_proxy_nat_ip"),
+        "listeners": [
+            {k: x[k] for k in ("ip", "port") if k in x}
+            for x in listeners
+            if isinstance(x, dict)
+        ]
+        if isinstance(listeners, list)
+        else [],
+        "outbound_bind_configured": bool(
+            cfg.get("network", {}).get("outbound_bind_addr")
+        ),
+    }
+
+
+def network_facts():
+    result = {}
+    for name, args in [
+        ("interfaces", ["ip", "-j", "address", "show"]),
+        ("routes", ["ip", "-j", "route", "show"]),
+    ]:
+        try:
+            output = subprocess.run(
+                args, capture_output=True, text=True, timeout=5, check=True
+            )
+            values = json.loads(output.stdout)
+            if name == "interfaces":
+                result[name] = [
+                    {
+                        "name": v.get("ifname"),
+                        "state": v.get("operstate"),
+                        "addresses": [
+                            {
+                                "ip": a.get("local"),
+                                "prefix": a.get("prefixlen"),
+                                "scope": a.get("scope"),
+                            }
+                            for a in v.get("addr_info", [])
+                        ],
+                    }
+                    for v in values[:16]
+                ]
+            else:
+                result[name] = [
+                    {k: v[k] for k in ("dst", "gateway", "dev", "prefsrc") if k in v}
+                    for v in values[:32]
+                ]
+        except (OSError, ValueError, subprocess.SubprocessError):
+            result[name] = []
+    return result
+
+
+def facts():
+    try:
+        config_found = TELEMT_PATH.is_file()
+    except OSError:
+        config_found = None  # An unreadable parent directory is not proof of absence.
+    result = {
+        "hostname": platform.node(),
+        "os": platform.platform(),
+        "telemt_version": run(["telemt", "--version"]),
+        "telemt_service": run(["systemctl", "is-active", "telemt"]),
+        "config_found": config_found,
+    }
+    discovered = read_config_facts()
+    result.update(
+        {k: v for k, v in discovered.items() if k not in ("public_host", "proxy_port")}
+    )
+    result.update(network_facts())
     return result
 
 
@@ -53,12 +182,8 @@ def proxy_endpoint():
     override_port = os.environ.get("AUTOIP_PROXY_PORT")
     if override_host:
         return override_host, int(override_port) if override_port else 443
-    try:
-        cfg = tomllib.loads(TELEMT_PATH.read_text())
-        return (cfg.get("general", {}).get("links", {}).get("public_host"),
-                cfg.get("server", {}).get("port", 443))
-    except (OSError, ValueError):
-        return None, 443
+    detected = read_config_facts()
+    return detected.get("public_host"), detected.get("proxy_port", 443)
 
 
 def save_identity(data):
@@ -86,7 +211,9 @@ def enroll():
     if not token:
         raise RuntimeError("AUTOIP_ENROLL_TOKEN is missing")
     if STATE_PATH.exists():
-        raise RuntimeError("Agent is already enrolled; revoke first before re-enrolling")
+        raise RuntimeError(
+            "Agent is already enrolled; revoke first before re-enrolling"
+        )
     machine_id_path = STATE_PATH.with_name("machine-id")
     if machine_id_path.exists():
         machine_id = machine_id_path.read_text().strip()
@@ -96,7 +223,10 @@ def enroll():
         machine_id_path.write_text(machine_id)
         machine_id_path.chmod(0o600)
     with httpx.Client(timeout=20) as client:
-        r = client.post(COMMANDER + "/api/agent/enroll", json={"token": token, "machine_id": machine_id, "facts": facts()})
+        r = client.post(
+            COMMANDER + "/api/agent/enroll",
+            json={"token": token, "machine_id": machine_id, "facts": facts()},
+        )
         r.raise_for_status()
         data = r.json()
     save_identity(data)
@@ -105,6 +235,18 @@ def enroll():
 
 def execute(job):
     kind = job.get("kind")
+    if kind == "floating_network":
+        try:
+            result = local_request("/run/autoip-network-helper.sock", job["payload"])
+            return {
+                "status": "succeeded",
+                "result": {"facts": {}, "message": result.get("status", "ready")},
+            }
+        except (OSError, ValueError, RuntimeError, KeyError):
+            return {
+                "status": "failed",
+                "result": {"error": "Restricted network helper rejected operation"},
+            }
     if kind == "status":
         return {"status": "succeeded", "result": {"facts": facts()}}
     if kind == "apply_ad_tag":
@@ -112,18 +254,59 @@ def execute(job):
         if not re.fullmatch(r"[0-9a-f]{32}", tag):
             return {"status": "failed", "result": {"error": "Invalid ad_tag"}}
         if not ALLOW_AD_TAG_WRITE:
-            return {"status": "failed", "result": {"error": "Local ad_tag writes disabled; set AUTOIP_ALLOW_AD_TAG_WRITE after audit"}}
+            return {
+                "status": "failed",
+                "result": {
+                    "error": "Local ad_tag writes disabled; set AUTOIP_ALLOW_AD_TAG_WRITE after audit"
+                },
+            }
         try:
-            r = subprocess.run(
-                ["sudo", "-n", "/usr/local/libexec/autoip-telemt-helper", "apply-ad-tag"],
-                input=tag + "\n", text=True, capture_output=True, timeout=20, check=False
-            )
-            if r.returncode:
-                return {"status": "failed", "result": {"error": r.stderr.strip()[:240]}}
-            return {"status": "succeeded", "result": {"message": r.stdout.strip()[:240]}}
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return {"status": "failed", "result": {"error": str(exc)[:240]}}
+            outcome = helper_request("apply-ad-tag", ad_tag=tag)
+            return {"status": "succeeded", "result": outcome}
+        except (OSError, ValueError, RuntimeError):
+            return {
+                "status": "failed",
+                "result": {
+                    "error": "Restricted Telemt helper unavailable or operation disabled"
+                },
+            }
     return {"status": "failed", "result": {"error": "Unsupported job"}}
+
+
+def execute_durable(job):
+    # Persist before acknowledgement; the only write operation is itself idempotent.
+    ledger = STATE_PATH.with_name("jobs.sqlite3")
+    fd = os.open(ledger, os.O_CREAT | os.O_WRONLY, 0o600)
+    os.close(fd)
+    with sqlite3.connect(ledger) as db:
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS results (id TEXT PRIMARY KEY, result TEXT)"
+        )
+        previous = db.execute(
+            "SELECT result FROM results WHERE id=?", (job["id"],)
+        ).fetchone()
+        if previous:
+            return json.loads(previous[0])
+        result = execute(job)
+        db.execute("INSERT INTO results VALUES (?, ?)", (job["id"], json.dumps(result)))
+        db.commit()
+        return result
+
+
+def enroll_local(url):
+    # Root reads a hidden token, then permanently drops privileges before enrollment.
+    global COMMANDER
+    if os.geteuid() != 0:
+        raise RuntimeError("Run enroll-local using sudo")
+    account = pwd.getpwnam("autoip-agent")
+    token = getpass.getpass("Одноразовый код регистрации (ввод скрыт): ")
+    COMMANDER = url.rstrip("/")
+    os.environ["AUTOIP_ENROLL_TOKEN"] = token
+    os.initgroups(account.pw_name, account.pw_gid)
+    os.setgid(account.pw_gid)
+    os.setuid(account.pw_uid)
+    os.chdir("/opt/AutoIP")
+    enroll()
 
 
 def serve():
@@ -136,21 +319,30 @@ def serve():
         while True:
             try:
                 host, port = proxy_endpoint()
-                hb = client.post(COMMANDER + "/api/agent/heartbeat",
-                                 json={"facts": facts(), "public_host": host, "proxy_port": port})
+                hb = client.post(
+                    COMMANDER + "/api/agent/heartbeat",
+                    json={"facts": facts(), "public_host": host, "proxy_port": port},
+                )
                 hb.raise_for_status()
                 jobs = client.get(COMMANDER + "/api/agent/jobs")
                 jobs.raise_for_status()
                 for job in jobs.json().get("jobs", []):
-                    result = execute(job)
-                    response = client.post(COMMANDER + "/api/agent/jobs/" + job["id"] + "/result", json=result)
+                    result = execute_durable(job)
+                    result = {**result, "attempt": job.get("attempt")}
+                    response = client.post(
+                        COMMANDER + "/api/agent/jobs/" + job["id"] + "/result",
+                        json=result,
+                    )
                     response.raise_for_status()
-            except (httpx.HTTPError, KeyError, ValueError) as exc:
-                print("Commander unavailable or invalid response:", str(exc)[:200], flush=True)
+            except (httpx.HTTPError, KeyError, ValueError):
+                print("Commander unavailable or invalid response; retrying", flush=True)
             time.sleep(20)
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "enroll-local":
+        enroll_local(sys.argv[2])
+        sys.exit(0)
     if len(sys.argv) != 2 or sys.argv[1] not in ("enroll", "run", "status"):
         sys.exit("Usage: python -m agent.main enroll|run|status")
     if sys.argv[1] == "enroll":

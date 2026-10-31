@@ -17,3 +17,21 @@ install -m 0644 "$ROOT_DIR/agent/autoip-agent.service" /etc/systemd/system/autoi
 # No sudo privileges are installed automatically.
 systemctl daemon-reload
 echo "Installed. Edit /etc/autoip-agent/agent.env, enroll as autoip-agent, then systemctl enable --now autoip-agent."
+# Optional read-only discovery broker. Does not grant the polling agent root privileges.
+if [[ " $* " == *" --with-config-reader "* ]]; then
+  install -m 0644 "$ROOT_DIR/agent/autoip-telemt-helper.socket" /etc/systemd/system/
+  install -m 0644 "$ROOT_DIR/agent/autoip-telemt-helper@.service" /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now autoip-telemt-helper.socket
+fi
+
+# Network mutations require an additional root-owned local policy; installing
+# this socket alone does not enable them.
+if [[ " $* " == *" --with-network-helper "* ]]; then
+  install -d -m 0700 /var/lib/autoip-floating-pilot
+  install -m 0644 "$ROOT_DIR/agent/autoip-network-helper.socket" /etc/systemd/system/
+  install -m 0644 "$ROOT_DIR/agent/autoip-network-helper@.service" /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now autoip-network-helper.socket
+  echo 'Network helper installed. Create root-only floating-policy.json before enabling paid recovery.'
+fi

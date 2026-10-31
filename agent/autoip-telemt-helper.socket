@@ -1,0 +1,11 @@
+[Unit]
+Description=AutoIP restricted Telemt helper socket
+[Socket]
+ListenStream=/run/autoip-telemt-helper.sock
+SocketUser=root
+SocketGroup=autoip-agent
+SocketMode=0660
+Accept=yes
+MaxConnections=4
+[Install]
+WantedBy=sockets.target
