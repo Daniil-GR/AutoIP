@@ -763,3 +763,59 @@ def test_candidate_window_cannot_outlive_temporary_network(db, paid_env, monkeyp
     monkeypatch.setattr(rr, "protocol_verification", forbidden)
     asyncio.run(paid.step(recovery.id))
     assert paid.load(recovery.id)["stage"] == "MANUAL_REQUIRED"
+
+
+@pytest.mark.parametrize(
+    "stage,status",
+    [
+        ("PAUSED_FOR_CDN", "PAUSED"),
+        ("PAUSED_FOR_CDN", "PAID_RUNNING"),
+        ("PAUSED", "PAID_RUNNING"),
+        ("FINAL_CHECK", "PAUSED"),
+    ],
+)
+def test_paused_recovery_is_not_scheduled_or_treated_as_failure(
+    db, paid_env, monkeypatch, stage, status
+):
+    from unittest.mock import AsyncMock
+
+    a, _ = paid_env
+    r = start(db, a)
+    r.status = status
+    state = db.get(SystemSetting, paid.state_key(r.id))
+    state.value = {
+        **state.value,
+        "stage": stage,
+        "next_at": (utcnow() - timedelta(minutes=10)).isoformat(),
+    }
+    db.commit()
+    before = dict(state.value)
+    scheduled = AsyncMock(
+        side_effect=AssertionError("Paused work must not be selected")
+    )
+    monkeypatch.setattr(paid, "step", scheduled)
+    assert asyncio.run(paid.tick()) is False
+    scheduled.assert_not_awaited()
+    db.refresh(state)
+    assert state.value == before
+
+
+def test_pause_saved_after_tick_selection_is_respected_by_step(
+    db, paid_env, monkeypatch
+):
+    from unittest.mock import Mock
+
+    a, _ = paid_env
+    r = start(db, a)
+    r.status = "PAUSED"
+    db.commit()
+    check = Mock(
+        side_effect=AssertionError(
+            "Pause must be checked before context or provider calls"
+        )
+    )
+    monkeypatch.setattr(paid, "require_context", check)
+    asyncio.run(paid.step(r.id))
+    check.assert_not_called()
+    db.refresh(r)
+    assert r.status == "PAUSED"

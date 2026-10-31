@@ -832,6 +832,8 @@ async def tick():
 
 
 STAGE_LABELS = {
+    "PAUSED": "Приостановлено",
+    "PAUSED_FOR_CDN": "Приостановлено на время работы через CDN",
     "PAID_RUNNING": "Поиск нового Floating IP",
     "NETWORK_PREFLIGHT": "Проверка сетевого помощника",
     "ORDER": "Получение Floating IP",

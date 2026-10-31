@@ -26,6 +26,8 @@ from .floating_pilot import (
 )
 from . import reserve_recovery as rr
 
+PAUSED_STAGES = frozenset({"PAUSED", "PAUSED_FOR_CDN"})
+
 
 def policy_key(agent_id):
     return "paid-auto:" + agent_id
@@ -595,6 +597,10 @@ async def step(identifier):
     stage = s["stage"]
     with SessionLocal() as db:
         r = db.get(Recovery, identifier)
+        # Recheck after selection: a pause may have been saved while waiting
+        # for the recovery lock. Pauses are not failures or retryable work.
+        if stage in PAUSED_STAGES or r.status == "PAUSED":
+            return
         if stage == "HANDOFF":
             if r.status == "SUCCEEDED":
                 # TTL grace plus final success has already verified all selected DNS.
@@ -912,6 +918,9 @@ async def tick():
         rows = db.scalars(
             select(SystemSetting).where(SystemSetting.key.like("paid-recovery:%"))
         ).all()
+        paused_ids = set(
+            db.scalars(select(Recovery.id).where(Recovery.status == "PAUSED"))
+        )
         identifiers = [
             x.key.split(":", 1)[1]
             for x in rows
@@ -919,7 +928,8 @@ async def tick():
                 x.value.get("stage") == "HANDOFF"
                 and db.get(Recovery, x.key.split(":", 1)[1]).status in rr.ACTIVE
             )
-            and x.value.get("stage") not in ("DONE", "MANUAL_REQUIRED")
+            and x.value.get("stage") not in {"DONE", "MANUAL_REQUIRED", *PAUSED_STAGES}
+            and x.key.split(":", 1)[1] not in paused_ids
             and (
                 not x.value.get("next_at")
                 or utcnow() >= aware(datetime.fromisoformat(x.value["next_at"]))
