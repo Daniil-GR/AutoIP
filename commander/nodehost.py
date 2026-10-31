@@ -111,7 +111,16 @@ async def click_edit(client, message, data, *, timeout=25):
     if len(choices) != 1:
         raise NodeHostError("Интерфейс Node Host изменился; действие не выполнено")
     before = signature(message)
-    await asyncio.wait_for(message.click(data=data), timeout=timeout)
+    answer = await asyncio.wait_for(message.click(data=data), timeout=timeout)
+    if getattr(answer, "alert", False):
+        if str(getattr(answer, "message", "")).strip() == (
+            "❌ Покупка серверов в выбранной локации временно недоступна"
+        ):
+            raise NodeHostError(
+                "Хостер временно отключил покупку серверов в выбранной локации"
+            )
+        # Unknown provider notices can contain private account details.
+        raise NodeHostError("Хостер вернул неизвестное уведомление; нужна сверка")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         after = await client.get_messages(BOT_ID, ids=message.id)

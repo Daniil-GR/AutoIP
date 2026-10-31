@@ -33,6 +33,7 @@ const statuses = {
   telemt_profile: "Профиль Telemt",
   tls_lineage: "Сертификат польской ноды",
   existing_current: "Исходная польская нода",
+  deleted_by_owner: "Удалён владельцем; отсутствие подтверждено хостером",
   blocked: "Заблокирован",
   RECOVERING: "Восстановление выполняется",
   QUEUED: "В очереди",

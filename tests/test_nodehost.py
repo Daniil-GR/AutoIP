@@ -293,3 +293,40 @@ def test_ssh_first_pin_uses_supported_sdk_arguments_and_never_disables_verificat
     assert asyncio.run(bootstrap.connect("access", allow_first_pin=True)) == "connected"
     db.expire_all()
     assert db.get(Integration, "access").ciphertext == "encrypted-with-pin"
+
+
+@pytest.mark.parametrize(
+    "notice,expected",
+    [
+        (
+            "❌ Покупка серверов в выбранной локации временно недоступна",
+            "временно отключил",
+        ),
+        ("private-account-secret", "неизвестное уведомление"),
+    ],
+)
+def test_menu_alert_stops_before_polling_without_leaking_private_notice(
+    notice, expected
+):
+    from commander.nodehost import click_edit, NodeHostError
+    from types import SimpleNamespace
+
+    async def click(**kwargs):
+        return SimpleNamespace(alert=True, message=notice)
+
+    class Client:
+        async def get_messages(self, *args, **kwargs):
+            raise AssertionError(
+                "Availability alert must not wait for a nonexistent edit"
+            )
+
+    msg = SimpleNamespace(
+        raw_text="Choose location",
+        buttons=[
+            [SimpleNamespace(text="Germany", data=b"select_configuration;1;Germany")]
+        ],
+        click=click,
+    )
+    with pytest.raises(NodeHostError, match=expected) as error:
+        asyncio.run(click_edit(Client(), msg, b"select_configuration;1;Germany"))
+    assert "private-account-secret" not in str(error.value)
