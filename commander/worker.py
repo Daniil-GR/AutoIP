@@ -16,6 +16,10 @@ log = logging.getLogger(__name__)
 
 
 async def tick():
+    from .edge_trial import tick as trial_tick
+
+    if await trial_tick():
+        return True
     from .cdn_domains import tick as cdn_tick
 
     if await cdn_tick():
