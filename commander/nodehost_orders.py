@@ -1,4 +1,4 @@
-"""Verified Node Host Poland purchase flow; payment requires a persisted quote."""
+"""Verified Node Host purchase flow; payment requires a persisted quote."""
 
 import asyncio
 import hashlib
@@ -37,20 +37,25 @@ def exact_data(message, pattern):
     return matches[0]
 
 
-def quote_data(message):
+def quote_data(message, *, location="Poland", ram_gb=3):
+    if (location, ram_gb) not in (("Poland", 3), ("Germany", 2)):
+        raise NodeHostError("Конфигурация страны не согласована")
+    speed = 1 if location == "Germany" else 10
     text = message.raw_text
     for pattern in (
         r"CPU:\s*1\b",
-        r"RAM:\s*3\b",
+        rf"RAM:\s*{ram_gb}\b",
         r"Диск:\s*25 GB\b",
         r"ОС:\s*Ubuntu 24\.04\b",
-        r"Локация:\s*Poland",
+        rf"Локация:\s*{location}\b",
         r"Срок аренды:\s*1 день\b",
-        r"Скорость порта:\s*10GBps\b",
+        rf"Скорость порта:\s*{speed}GBps\b",
     ):
         if not re.search(pattern, text):
             raise NodeHostError("Итоговая конфигурация VPS отличается от согласованной")
-    callback = exact_data(message, r"buy;10;Poland;\d+;1;Ubuntu;23;1;[0-9]+\.[0-9]+;₽")
+    callback = exact_data(
+        message, rf"buy;{speed};{location};\d+;1;Ubuntu;23;1;[0-9]+\.[0-9]+;₽"
+    )
     rubles = re.findall(r"Стоимость:\s*([0-9]+(?:[.,][0-9]+)?)\s*₽", text)
     if len(rubles) != 1:
         raise NodeHostError("Не определена итоговая цена VPS")
@@ -65,6 +70,12 @@ def quote_data(message):
         "days": 1,
         "fingerprint": fingerprint,
         "message_id": message.id,
+        "location": location,
+        "cpu": 1,
+        "ram_gb": ram_gb,
+        "disk_gb": 25,
+        "os": "Ubuntu 24.04",
+        "speed_gbps": speed,
     }
 
 
@@ -87,13 +98,15 @@ async def root_menu(client):
     return result
 
 
-async def open_locations(client, message):
+async def open_locations(client, message, *, speed=10):
     """One retry for the unpaid speed selector, only if its menu is unchanged.
 
     Node Host sometimes ignores the first callback on a newly sent root menu.
     This exception is deliberately limited to select_geo, never payment.
     """
-    data = exact_data(message, r"select_geo;10")
+    if speed not in (1, 10):
+        raise NodeHostError("Скорость Node Host не согласована")
+    data = exact_data(message, rf"select_geo;{speed}")
     before = signature(message)
     try:
         return await click_edit(client, message, data)
@@ -104,23 +117,63 @@ async def open_locations(client, message):
         return await click_edit(client, current, data)
 
 
-async def prepare(telegram_id):
+def selected_location(db, telegram_id, location=None):
+    profile = db.get(SystemSetting, "nodehost-pl-profile")
+    policy = profile.value if profile else {}
+    location = location or policy.get("location", "Poland")
+    if location == "Poland" and policy.get("fallback_location") == "Germany":
+        search = db.get(SystemSetting, "nodehost-search-pilot")
+        if search and search.value.get("fallback_activated_for") == telegram_id:
+            return "Germany"
+        rejected = (
+            list(dict.fromkeys(search.value.get("rejected_receipts", [])))
+            if search
+            else []
+        )
+        streak = 0
+        for receipt_id in reversed(rejected):
+            receipt = db.get(SystemSetting, "vps-receipt:" + str(receipt_id))
+            if (
+                not receipt
+                or receipt.value.get("telegram_integration_id") != telegram_id
+            ):
+                break
+            data = receipt.value
+            if (
+                data.get("location", "Poland") != "Poland"
+                or data.get("preflight_decision", {}).get("status")
+                != "REJECT_RU_FILTER"
+            ):
+                break
+            streak += 1
+        if streak >= 3:
+            location = "Germany"
+    return location
+
+
+async def prepare(telegram_id, *, location=None):
     """Browse only. The final buy callback is not sent by this function."""
+    with SessionLocal() as db:
+        location = selected_location(db, telegram_id, location)
+    if location not in ("Poland", "Germany"):
+        raise NodeHostError("Локация Node Host не согласована")
+    ram_gb = 2 if location == "Germany" else 3
+    speed = 1 if location == "Germany" else 10
     async with session(telegram_id) as client:
         m = await root_menu(client)
-        m = await open_locations(client, m)
+        m = await open_locations(client, m, speed=speed)
         for pattern in (
-            r"select_configuration;10;Poland",
-            r"configurator;10;Poland",
+            rf"select_configuration;{speed};{location}",
+            rf"configurator;{speed};{location}",
         ):
             m = await click_edit(client, m, exact_data(m, pattern))
         for action, target, index in (
             ("plusc", 1, 3),
-            ("plusr", 3, 4),
+            ("plusr", ram_gb, 4),
             ("plusd", 25, 5),
         ):
             for _ in range(20):
-                data = exact_data(m, action + r";10;Poland;\d+;\d+;\d+")
+                data = exact_data(m, action + rf";{speed};{location};\d+;\d+;\d+")
                 current = int(data.decode().split(";")[index])
                 if current == target:
                     break
@@ -129,16 +182,28 @@ async def prepare(telegram_id):
                 m = await click_edit(client, m, data)
             else:
                 raise NodeHostError("Конфигуратор не достиг выбранной конфигурации")
-        m = await click_edit(client, m, exact_data(m, r"conf_buy;10;Poland;1;3;25"))
+        m = await click_edit(
+            client, m, exact_data(m, rf"conf_buy;{speed};{location};1;{ram_gb};25")
+        )
         for pattern in (
-            r"select_os_version;10;Poland;\d+;1;Ubuntu",
-            r"select_duration;10;Poland;\d+;1;Ubuntu;23",
-            r"accept;10;Poland;\d+;1;Ubuntu;23;1;[0-9]+\.[0-9]+;₽",
+            rf"select_os_version;{speed};{location};\d+;1;Ubuntu",
+            rf"select_duration;{speed};{location};\d+;1;Ubuntu;23",
+            rf"accept;{speed};{location};\d+;1;Ubuntu;23;1;[0-9]+\.[0-9]+;₽",
         ):
             m = await click_edit(client, m, exact_data(m, pattern))
-        result = quote_data(m)
+        result = quote_data(m, location=location, ram_gb=ram_gb)
     identifier = str(uuid4())
     with SessionLocal() as db:
+        profile = db.get(SystemSetting, "nodehost-pl-profile")
+        search = db.get(SystemSetting, "nodehost-search-pilot")
+        if (
+            location == "Germany"
+            and profile
+            and profile.value.get("location") == "Poland"
+            and profile.value.get("fallback_location") == "Germany"
+            and search
+        ):
+            search.value = {**search.value, "fallback_activated_for": telegram_id}
         db.add(
             SystemSetting(
                 key="nh-quote:" + identifier,
@@ -160,7 +225,20 @@ async def prepare(telegram_id):
         db.commit()
     return {
         "quote_id": identifier,
-        **{k: result[k] for k in ("price_usd", "price_rub", "days")},
+        **{
+            k: result[k]
+            for k in (
+                "price_usd",
+                "price_rub",
+                "days",
+                "location",
+                "cpu",
+                "ram_gb",
+                "disk_gb",
+                "os",
+                "speed_gbps",
+            )
+        },
     }
 
 
@@ -202,7 +280,15 @@ async def purchase(quote_id, operation_id, *, approved=False):
                         "Есть неопределённый заказ; новая покупка запрещена до сверки"
                     )
         m = await client.get_messages(BOT_ID, ids=quote["message_id"])
-        if not m or quote_data(m)["fingerprint"] != quote["fingerprint"]:
+        if (
+            not m
+            or quote_data(
+                m,
+                location=quote.get("location", "Poland"),
+                ram_gb=quote.get("ram_gb", 3),
+            )["fingerprint"]
+            != quote["fingerprint"]
+        ):
             raise NodeHostError("Параметры или цена перед оплатой изменились")
         latest = await client.get_messages(BOT_ID, limit=1)
         baseline = latest[0].id if latest else 0
@@ -281,6 +367,14 @@ async def purchase(quote_id, operation_id, *, approved=False):
                     managed=True,
                     created_at=receipt.date,
                 )
+                resource = db.get(SystemSetting, "vps-receipt:" + str(receipt.id))
+                resource.value = {
+                    **resource.value,
+                    "location": quote.get("location", "Poland"),
+                    "cpu": 1,
+                    "ram_gb": quote.get("ram_gb", 3),
+                    "disk_gb": 25,
+                }
                 op = db.get(SystemSetting, "nodehost-op:" + operation_id)
                 op.value = {
                     **op.value,

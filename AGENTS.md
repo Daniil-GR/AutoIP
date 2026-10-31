@@ -68,3 +68,12 @@ Read docs/nodehost-v2.md for verified scope and unfinished integration.
 Live Node Host purchases, deletion and DNS cutover require a concrete approved
 pilot; browsing the configuration menu is authorized. Report deletion/refund
 refusal and retain resource accounting. Never try to bypass hoster restrictions.
+
+## Node Host country update, 2026-10-31
+
+The owner now selected Germany, 1 vCPU / 2 GB RAM / 25 GB disk, Ubuntu 24.04,
+one day. Germany is offered under the 1 Gbps menu. Keep the existing logical
+proxy hostname/profile. When searching Poland in future, three confirmed
+Polish REJECT_RU_FILTER receipts trigger Germany for that search. Unknown
+checks do not count. The owner reported manually deleting Polish servers;
+keep this report distinct from a verified provider deletion/refund.

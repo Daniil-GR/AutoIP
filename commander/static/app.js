@@ -1279,13 +1279,13 @@ async function vps(root) {
   root.append(el('p', 'Замена VPS через Telegram готовится к пилоту. Автопокупки Node Host выключены. Доступы зашифрованы; пароли сюда не выводятся.', 'notice'));
   root.append(button('Подготовить заказ на сутки', async () => {
     const integrations = (await api('/api/integrations')).filter(i => i.kind === 'telethon');
-    modal('Предложение Node Host', 'Польша, Ubuntu 24.04, 1 CPU / 3 ГБ / 25 ГБ. Сейчас будет открыт только предварительный расчёт, без оплаты. Не работайте параллельно с меню хостера.');
+    modal('Предложение Node Host', 'Параметры будут взяты из выбранного профиля Node Host. Сейчас будет открыт только предварительный расчёт, без оплаты. Не работайте параллельно с меню хостера.');
     const select = el('select');
     for (const i of integrations) {const o = el('option', i.name); o.value = i.id; select.append(o);}
     $('dialogBody').append(select);
     saveButton(async () => {
       const q = await write('/api/nodehost/quote', {integration_id:select.value});
-      modal('Подтвердить покупку VPS', 'Сутки: ' + q.price_rub + ' ₽ (' + q.price_usd + ' $ по данным бота). Это платная покупка одного VPS. Установка и изменение DNS автоматически не запускаются.');
+      modal('Подтвердить покупку VPS', (q.location === 'Germany' ? 'Германия' : 'Польша') + ', ' + q.cpu + ' CPU / ' + q.ram_gb + ' ГБ RAM / ' + q.disk_gb + ' ГБ, порт ' + q.speed_gbps + ' Гбит/с. Сутки: ' + q.price_rub + ' ₽ (' + q.price_usd + ' $ по данным бота). Это платная покупка одного VPS. Установка и изменение DNS автоматически не запускаются.');
       const operationId = crypto.randomUUID();
       saveButton(async () => {
         const r = await write('/api/nodehost/order', {quote_id:q.quote_id, operation_id:operationId, approved:true});
@@ -1296,7 +1296,7 @@ async function vps(root) {
   }));
   root.append(button('Найти VPS в истории Telegram', async () => {
     const integrations = (await api('/api/integrations')).filter(i => i.kind === 'telethon');
-    modal('Импорт польских VPS', 'Укажите IP уже купленных серверов. Команда читает историю nodehost_bot и сохраняет найденные доступы зашифрованно. Покупок и установки нет.');
+    modal('Импорт VPS Node Host', 'Укажите IP уже купленных серверов. Команда читает историю nodehost_bot и сохраняет найденные доступы зашифрованно. Покупок и установки нет.');
     const wrap = el('div', '', 'field'), select = el('select');
     for (const i of integrations) {const option = el('option', i.name); option.value = i.id; select.append(option);}
     wrap.append(el('label', 'Telegram-аккаунт'), select);

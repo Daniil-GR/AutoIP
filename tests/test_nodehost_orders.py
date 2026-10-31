@@ -228,3 +228,127 @@ def test_only_unchanged_unpaid_speed_menu_can_retry(monkeypatch, changed):
     with pytest.raises(nodehost.NodeHostError):
         asyncio.run(orders.open_locations(Client(), message()))
     assert len(calls) == (1 if changed else 2)
+
+
+def test_german_quote_binds_country_and_two_gb_memory():
+    text = (
+        TEXT.replace("RAM: 3", "RAM: 2")
+        .replace("Poland", "Germany")
+        .replace("10GBps", "1GBps")
+    )
+    callback = DATA.replace("Poland", "Germany").replace(";10;", ";1;")
+    quote = orders.quote_data(message(text, callback), location="Germany", ram_gb=2)
+    assert (quote["location"], quote["cpu"], quote["ram_gb"], quote["disk_gb"]) == (
+        "Germany",
+        1,
+        2,
+        25,
+    )
+    with pytest.raises(nodehost.NodeHostError):
+        orders.quote_data(message(text, callback))
+    with pytest.raises(nodehost.NodeHostError):
+        orders.quote_data(
+            message(text.replace("RAM: 2", "RAM: 3"), callback),
+            location="Germany",
+            ram_gb=2,
+        )
+    with pytest.raises(nodehost.NodeHostError):
+        orders.quote_data(message(text, DATA), location="Germany", ram_gb=2)
+
+
+def test_german_purchase_rechecks_configuration_and_records_country(db, purchase_setup):
+    quote_id, client, m = purchase_setup
+    m.raw_text = (
+        TEXT.replace("RAM: 3", "RAM: 2")
+        .replace("Poland", "Germany")
+        .replace("10GBps", "1GBps")
+    )
+    callback = DATA.replace("Poland", "Germany").replace(";10;", ";1;")
+    m.buttons = [[SimpleNamespace(data=callback.encode())]]
+    q = db.get(SystemSetting, "nh-quote:" + quote_id)
+    q.value = {**q.value, **orders.quote_data(m, location="Germany", ram_gb=2)}
+    db.commit()
+
+    async def click(*, data):
+        assert data == callback.encode()
+        client.clicks += 1
+
+    m.click = click
+    result = asyncio.run(orders.purchase(quote_id, str(uuid4()), approved=True))
+    assert result["status"] == "ALLOCATED"
+    resource = db.get(SystemSetting, "vps-receipt:20")
+    assert resource.value["location"] == "Germany"
+    assert resource.value["ram_gb"] == 2
+    assert client.clicks == 1
+
+
+@pytest.mark.parametrize("failures,expected", [(2, "Poland"), (3, "Germany")])
+def test_location_fallback_requires_three_confirmed_polish_rejections(
+    db, failures, expected
+):
+    db.add(
+        SystemSetting(
+            key="nodehost-pl-profile",
+            value={"location": "Poland", "fallback_location": "Germany"},
+        )
+    )
+    ids = list(range(100, 100 + failures))
+    db.add(SystemSetting(key="nodehost-search-pilot", value={"rejected_receipts": ids}))
+    for rid in ids:
+        db.add(
+            SystemSetting(
+                key="vps-receipt:" + str(rid),
+                value={
+                    "telegram_integration_id": "telegram",
+                    "location": "Poland",
+                    "preflight_decision": {"status": "REJECT_RU_FILTER"},
+                },
+            )
+        )
+    db.commit()
+    assert orders.selected_location(db, "telegram") == expected
+    assert orders.selected_location(db, "another-account") == "Poland"
+
+
+def test_duplicate_or_unknown_receipts_do_not_trigger_country_fallback(db):
+    db.add(
+        SystemSetting(
+            key="nodehost-pl-profile",
+            value={"location": "Poland", "fallback_location": "Germany"},
+        )
+    )
+    search = SystemSetting(
+        key="nodehost-search-pilot", value={"rejected_receipts": [100, 100, 100]}
+    )
+    receipt = SystemSetting(
+        key="vps-receipt:100",
+        value={
+            "telegram_integration_id": "telegram",
+            "preflight_decision": {"status": "REJECT_RU_FILTER"},
+        },
+    )
+    db.add_all([search, receipt])
+    db.commit()
+    assert orders.selected_location(db, "telegram") == "Poland"
+    receipt.value = {**receipt.value, "preflight_decision": {"status": "RECHECK"}}
+    search.value = {"rejected_receipts": [100, 101, 102]}
+    db.commit()
+    assert orders.selected_location(db, "telegram") == "Poland"
+
+
+def test_fallback_stays_in_germany_during_same_account_search(db):
+    db.add(
+        SystemSetting(
+            key="nodehost-pl-profile",
+            value={"location": "Poland", "fallback_location": "Germany"},
+        )
+    )
+    db.add(
+        SystemSetting(
+            key="nodehost-search-pilot",
+            value={"fallback_activated_for": "telegram", "rejected_receipts": []},
+        )
+    )
+    db.commit()
+    assert orders.selected_location(db, "telegram") == "Germany"
+    assert orders.selected_location(db, "other-account") == "Poland"
