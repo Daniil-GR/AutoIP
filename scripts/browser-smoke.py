@@ -156,6 +156,39 @@ with SessionLocal() as db:
                     page.get_by_text(
                         "Тестовая интеграция браузера", exact=True
                     ).wait_for()
+                    page.get_by_role(
+                        "button", name="+ Подключить интеграцию", exact=True
+                    ).click()
+                    page.get_by_label("Название", exact=True).fill(
+                        "FakeTLS тестовый профиль"
+                    )
+                    page.get_by_label("Сервис", exact=True).select_option(
+                        "telemt_profile"
+                    )
+                    page.get_by_label("Режим прокси", exact=True).select_option(
+                        "mtproto_faketls"
+                    )
+                    page.get_by_label("domain", exact=True).fill("new.vetka.rest")
+                    page.get_by_label("hello (32 HEX, без dd/ee)", exact=True).fill(
+                        "a" * 32
+                    )
+                    page.get_by_label("ad_tag", exact=True).fill("b" * 32)
+                    page.get_by_role("button", name="Сохранить", exact=True).click()
+                    page.get_by_text("FakeTLS тестовый профиль", exact=True).wait_for()
+                    page.locator("#add").click()
+                    page.get_by_label("Название агента", exact=True).fill(
+                        "Будущая FakeTLS нода"
+                    )
+                    page.get_by_label("Режим прокси", exact=True).select_option(
+                        "mtproto_faketls"
+                    )
+                    with page.expect_response(
+                        lambda r: r.url.endswith("/api/enrollments")
+                        and r.request.method == "POST"
+                    ) as created:
+                        page.get_by_role("button", name="Создать код", exact=True).click()
+                    assert created.value.json()["proxy_mode"] == "mtproto_faketls"
+                    page.locator("#close").click()
                     page.locator("#nav-dashboard").click()
                     page.set_viewport_size({"width": 390, "height": 844})
                     page.wait_for_timeout(400)

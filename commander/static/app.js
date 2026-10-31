@@ -421,6 +421,7 @@ async function agentDetails(a) {
   const b = $("dialogBody");
   b.append(
     kv("Домен", a.public_host),
+    kv("Режим", a.configuration.proxy_mode === "mtproto_faketls" ? "MTProto · FakeTLS 443" : "Web + MTProto"),
     kv("Management IP", a.configuration.management_ip),
     kv("Floating IP", a.configuration.floating_ip),
     kv("DNS-запись", a.configuration.dns_record),
@@ -476,6 +477,19 @@ async function agentDetails(a) {
   const jobs = await api("/api/agents/" + a.id + "/jobs");
   b.append(el("h3", "Последние задания"));
   for (const j of jobs.slice(0, 5)) b.append(kv(j.kind, title(j.status)));
+}
+function proxyModeField(value = "web_mtproto") {
+  const wrap = el("div", "", "field"), input = el("select");
+  input.setAttribute("aria-label", "Режим прокси");
+  for (const [key, label] of [
+    ["web_mtproto", "Web + MTProto — HTTPS 443 и MTProto 9443"],
+    ["mtproto_faketls", "Только MTProto — FakeTLS 443, SNI www.booking.com"],
+  ]) {
+    const option = el("option", label); option.value = key; input.append(option);
+  }
+  input.value = value;
+  wrap.append(el("label", "Режим прокси"), input);
+  return {wrap, input};
 }
 function saveButton(fn, label = "Сохранить") {
   $("action").hidden = false;
@@ -541,6 +555,7 @@ async function editAgent(a) {
   );
   const schema = [
     ["provider", "Провайдер"],
+    ["proxy_mode", "Режим прокси"],
     ["region", "Регион"],
     ["sni_domain", "SNI-домен Telemt"],
     ["management_ip", "Постоянный Management IPv4"],
@@ -570,7 +585,10 @@ async function editAgent(a) {
   const inputs = {};
   for (const [key, label] of schema) {
     let f;
-    if (key.endsWith("integration_id") || key === "provider") {
+    if (key === "proxy_mode") {
+      f = proxyModeField(config.proxy_mode || "web_mtproto");
+      f.input.disabled = !!a.facts.config_found || a.facts.telemt_service === "active";
+    } else if (key.endsWith("integration_id") || key === "provider") {
       const wrap = el("div", "", "field"),
         select = el("select");
       wrap.append(el("label", label));
@@ -627,6 +645,15 @@ async function editAgent(a) {
   }
   if (!config.dns_record) inputs.dns_record.value = a.public_host || "";
   if (!config.sni_domain) inputs.sni_domain.value = a.facts.tls_domain || "";
+  inputs.proxy_mode.onchange = () => {
+    const onlyMTProto = inputs.proxy_mode.value === "mtproto_faketls";
+    inputs.mtproto_secret_format.value = onlyMTProto ? "ee" : "dd";
+    inputs.sni_domain.value = onlyMTProto ? "www.booking.com" : "";
+    if (onlyMTProto) inputs.web_proxy_host.value = "";
+    inputs.web_proxy_host.disabled = onlyMTProto;
+  };
+  inputs.web_proxy_host.disabled = inputs.proxy_mode.value === "mtproto_faketls";
+  $("dialogBody").append(el("p", "Режим задаётся для новой ноды. Он не переустанавливает действующий прокси. Для FakeTLS используются порт 443 и SNI www.booking.com; сертификат своего поддомена не требуется.", "note"));
   const ci = button("Получить проекты из Cherry", async () => {
     const id = inputs.cherry_integration_id.value;
     if (!id) throw Error("Выберите интеграцию Cherry");
@@ -901,7 +928,7 @@ function integrationForm() {
     ["ripe_atlas", "RIPE Atlas (дополнительный источник)"],
     ["mtproto_checker", "MTProto Checker"],
     ["mtproto", "MTProto secret"],
-    ["telemt_profile", "Профиль польского Telemt (секрет и ad_tag)"],
+    ["telemt_profile", "Профиль Telemt — режим, поддомен, hello и ad_tag"],
   ]) {
     const o = el("option", t);
     o.value = v;
@@ -925,8 +952,13 @@ function integrationForm() {
       mtproto: ["secret"],
       telemt_profile: ["domain", "secret", "ad_tag"],
     }[select.value];
+    if (select.value === "telemt_profile") {
+      const mode = proxyModeField();
+      inputs.proxy_mode = mode.input;
+      secretsRoot.append(mode.wrap, el("p", "Укажите новый поддомен vetka.rest. hello и ad_tag вводятся здесь при готовности; прежние профили не меняются.", "note"));
+    }
     for (const key of keys) {
-      const f = field(key, "", "password");
+      const f = field(key === "secret" && select.value === "telemt_profile" ? "hello (32 HEX, без dd/ee)" : key, "", key === "domain" ? "text" : "password");
       f.input.autocomplete = "new-password";
       inputs[key] = f.input;
       secretsRoot.append(f.wrap);
@@ -1093,9 +1125,10 @@ $("add").onclick = () => {
     "Создайте одноразовый код. Он действует 15 минут и будет показан только здесь.",
   );
   const f = field("Название агента");
-  $("dialogBody").append(f.wrap);
+  const mode = proxyModeField();
+  $("dialogBody").append(f.wrap, mode.wrap, el("p", "Выбор сохраняется в Commander. Установку Telemt на новый VPS выполняют отдельно с соответствующим профилем; hello и ad_tag можно добавить позже в защищённом разделе интеграций.", "note"));
   saveButton(async () => {
-    const t = await write("/api/enrollments", { name: f.input.value });
+    const t = await write("/api/enrollments", { name: f.input.value, proxy_mode: mode.input.value });
     const url = t.commander_url || location.origin;
     const command =
       "git clone --branch " +

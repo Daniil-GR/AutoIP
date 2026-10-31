@@ -247,7 +247,11 @@ def test_profile_integration_is_encrypted_and_never_echoes_values(client):
         json={
             "name": "Wrong domain",
             "kind": "telemt_profile",
-            "credentials": {"domain": "lt.vetka.rest", "secret": secret, "ad_tag": tag},
+            "credentials": {
+                "domain": "outside.example",
+                "secret": secret,
+                "ad_tag": tag,
+            },
         },
     )
     assert response.status_code == 422

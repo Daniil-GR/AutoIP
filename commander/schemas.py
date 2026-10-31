@@ -2,14 +2,16 @@ import ipaddress
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .dns_scope import managed_record, managed_zone
+from .proxy_modes import ProxyMode, DEFAULT_MODE, FAKETLS_MODE, FAKETLS_SNI
 
 
 class AgentConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid")
     provider: Literal["cherry", "nodehost", "other"] = "cherry"
+    proxy_mode: ProxyMode = DEFAULT_MODE
     vps_profile_integration_id: str = ""
     region: str = Field(default="", max_length=80)
     management_ip: str = ""
@@ -36,6 +38,17 @@ class AgentConfiguration(BaseModel):
     max_billed_ips: int = Field(default=2, ge=1, le=10)
     monthly_budget_cents: int = Field(default=0, ge=0, le=10000000)
     automation_mode: Literal["manual", "paused"] = "manual"
+
+    @model_validator(mode="after")
+    def protocol_settings(self):
+        if self.proxy_mode == FAKETLS_MODE:
+            if self.web_proxy_host:
+                raise ValueError("В режиме MTProto FakeTLS нет веб-прокси")
+            if self.sni_domain and self.sni_domain != FAKETLS_SNI:
+                raise ValueError("Установщик FakeTLS использует SNI www.booking.com")
+            self.sni_domain = FAKETLS_SNI
+            self.mtproto_secret_format = "ee"
+        return self
 
     @field_validator("dns_zone")
     @classmethod
@@ -106,13 +119,25 @@ class IntegrationInput(BaseModel):
                 "Произвольные метаданные интеграции пока не поддерживаются"
             )
         if self.kind == "telemt_profile":
-            if set(self.credentials) != {"domain", "secret", "ad_tag"}:
+            if set(self.credentials) - {
+                "domain",
+                "secret",
+                "ad_tag",
+                "proxy_mode",
+            } or not {"domain", "secret", "ad_tag"} <= set(self.credentials):
                 raise ValueError("Нужны domain, secret и ad_tag")
-            if self.credentials["domain"] != "pl.vetka.rest" or not all(
+            from .proxy_modes import mode_settings
+
+            mode_settings(self.credentials.get("proxy_mode", DEFAULT_MODE))
+            domain = managed_record(self.credentials["domain"])
+            if not domain or not all(
                 re.fullmatch(r"[a-f0-9]{32}", self.credentials[k])
                 for k in ("secret", "ad_tag")
             ):
-                raise ValueError("Нужны pl.vetka.rest и профиль из 32 hex-символов")
+                raise ValueError(
+                    "Нужны поддомен vetka.rest и профиль из 32 hex-символов"
+                )
+            self.credentials["domain"] = domain
             return
         if self.kind == "vps_access":
             if set(self.credentials) != {"ipv4", "username", "password"}:

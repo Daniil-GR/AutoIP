@@ -25,13 +25,24 @@ def main():
         "nodehost", help="Импорт и безопасная диагностика VPS Node Host"
     )
     nodehost.add_argument(
-        "action", choices=["discover", "status", "inspect", "check", "quote", "order"]
+        "action",
+        choices=[
+            "discover",
+            "status",
+            "inspect",
+            "check",
+            "quote",
+            "order",
+            "install",
+            "install-status",
+        ],
     )
     nodehost.add_argument("--integration-id")
     nodehost.add_argument("--addresses", nargs="+", default=[])
     nodehost.add_argument("--receipt-id", type=int)
     nodehost.add_argument("--quote-id")
     nodehost.add_argument("--operation-id")
+    nodehost.add_argument("--profile-id")
     nodehost.add_argument("--approved", action="store_true")
     telethon = sub.add_parser("telethon-login")
     telethon.add_argument("name", nargs="?", default="Telegram account")
@@ -131,11 +142,31 @@ def main():
                 if not item:
                     raise SystemExit("VPS не найден")
                 data = dict(item.value)
-            result = (
-                asyncio.run(inspect_vps(data["credential_id"], allow_first_pin=True))
-                if args.action == "inspect"
-                else asyncio.run(check(data["ipv4"]))
-            )
+            if args.action == "install":
+                from .vps_bootstrap import start_install
+
+                if not args.profile_id or not args.operation_id:
+                    raise SystemExit("Нужны --profile-id и --operation-id")
+                result = asyncio.run(
+                    start_install(
+                        data["credential_id"],
+                        args.profile_id,
+                        args.operation_id,
+                        approved=args.approved,
+                    )
+                )
+            elif args.action == "install-status":
+                from .vps_bootstrap import install_status
+
+                result = asyncio.run(install_status(data["credential_id"]))
+            else:
+                result = (
+                    asyncio.run(
+                        inspect_vps(data["credential_id"], allow_first_pin=True)
+                    )
+                    if args.action == "inspect"
+                    else asyncio.run(check(data["ipv4"]))
+                )
         print(json.dumps(result, ensure_ascii=False))
         return
     if args.command == "paid-recovery":

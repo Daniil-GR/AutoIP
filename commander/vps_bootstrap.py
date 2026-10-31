@@ -5,6 +5,7 @@ import asyncio
 import ipaddress
 import json
 import re
+import shlex
 from copy import deepcopy
 
 import asyncssh
@@ -14,6 +15,8 @@ from sqlalchemy import select
 from .database import Integration, SessionLocal, SystemSetting
 from .nodehost import NodeHostError, known_blocked
 from .vault import decrypt, encrypt
+from .proxy_modes import DEFAULT_MODE, FAKETLS_MODE, mode_settings
+from .dns_scope import managed_record
 
 INSTALLER_COMMIT = "00c671745d64b171d81cd6b55c62d211bbfac180"
 INSTALLER_SHA256 = "343b5843030be7e7f720cf5dcb8b0d6767a3c18864a863a55d634a196ff089dd"
@@ -21,6 +24,15 @@ INSTALLER_URL = (
     "https://raw.githubusercontent.com/Daniil-GR/TelemtProxy/"
     + INSTALLER_COMMIT
     + "/deploy.sh"
+)
+MTPROTO_INSTALLER_COMMIT = "c6c38912abfd27ad6ec20e0ddf3d46cc74279b7c"
+MTPROTO_INSTALLER_SHA256 = (
+    "1c40a51dfab13a0a6c5802cccc934e1c254716082a07d8c0c6494f2b149d25d4"
+)
+MTPROTO_INSTALLER_URL = (
+    "https://raw.githubusercontent.com/Daniil-GR/TelemtProxy/"
+    + MTPROTO_INSTALLER_COMMIT
+    + "/deploy-mtproto.sh"
 )
 
 
@@ -128,16 +140,21 @@ print(json.dumps({'os':osinfo.get('ID','').strip(chr(34)),'version':osinfo.get('
         return json.loads(result.stdout)
 
 
-async def installer():
+async def installer(proxy_mode=DEFAULT_MODE):
+    mode_settings(proxy_mode)
+    url = MTPROTO_INSTALLER_URL if proxy_mode == FAKETLS_MODE else INSTALLER_URL
+    expected = (
+        MTPROTO_INSTALLER_SHA256 if proxy_mode == FAKETLS_MODE else INSTALLER_SHA256
+    )
     async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
-        response = await client.get(INSTALLER_URL)
+        response = await client.get(url)
         response.raise_for_status()
         source = response.content
     # The reviewed commit is immutable; reject HTML/error pages or unexpected files.
     if (
         not source.startswith(b"#!/usr/bin/env bash\n")
         or len(source) > 2_000_000
-        or hashlib.sha256(source).hexdigest() != INSTALLER_SHA256
+        or hashlib.sha256(source).hexdigest() != expected
     ):
         raise NodeHostError("Неверный файл установщика")
     return source, hashlib.sha256(source).hexdigest()
@@ -158,6 +175,12 @@ class NodeHostError(RuntimeError): pass
 p=Path('/etc/telemt/telemt.toml')
 profile=json.loads(Path('/var/lib/autoip-vps/profile.json').read_text())
 old=p.read_text(); new=patch_profile(old,profile['secret'],profile['ad_tag'])
+if profile.get('proxy_mode') == 'mtproto_faketls':
+ c=tomllib.loads(new)
+ assert c['server']['port']==443 and c['general']['modes']['tls'] is True
+ assert c['general']['modes']['secure'] is False and c['general']['modes']['classic'] is False
+ assert c['censorship']['tls_domain']=='www.booking.com' and 'web' not in c
+ assert c['general']['links']['public_host']==profile['domain']
 stat=p.stat(); backup=p.with_name('telemt.toml.autoip-before-profile')
 if not backup.exists():
  fd=os.open(backup,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
@@ -173,6 +196,12 @@ if subprocess.run(['systemctl','restart','telemt']).returncode:
  p.write_text(old); os.chmod(p,stat.st_mode & 0o777); os.chown(p,stat.st_uid,stat.st_gid)
  subprocess.run(['systemctl','restart','telemt'])
  raise NodeHostError('Telemt restart failed; original profile restored')
+if profile.get('proxy_mode') == 'mtproto_faketls':
+ link=Path('/root/telemt-mtproto-link.txt')
+ fd=os.open(link,os.O_WRONLY|os.O_CREAT|os.O_TRUNC|os.O_NOFOLLOW,0o600)
+ os.fchmod(fd,0o600)
+ with os.fdopen(fd,'w') as f:
+  f.write('tg://proxy?server='+profile['domain']+'&port=443&secret=ee'+profile['secret']+'www.booking.com'.encode().hex()+'\\n')
 Path('/var/lib/autoip-vps/profile.json').unlink()
 """
     )
@@ -195,24 +224,51 @@ async def start_install(credential_id, profile_id, operation_id, *, approved=Fal
         receipts = db.scalars(
             select(SystemSetting).where(SystemSetting.key.like("vps-receipt:%"))
         ).all()
-        if not any(
-            r.value.get("credential_id") == credential_id and r.value.get("managed")
-            for r in receipts
-        ):
+        receipt = next(
+            (
+                r
+                for r in receipts
+                if r.value.get("credential_id") == credential_id
+                and r.value.get("managed")
+            ),
+            None,
+        )
+        if receipt is None:
             raise NodeHostError("VPS не передан под управление AutoIP")
+        from .vps_preflight import assess
+        from .database import utcnow
+        from datetime import datetime
+
+        evidence = receipt.value
+        rounds = evidence.get("ssh_rounds") or evidence.get("preflight_rounds", [])
+        verdict = assess(
+            db,
+            access["ipv4"],
+            datetime.fromisoformat(evidence["created_at"]),
+            rounds,
+            utcnow(),
+        )
+        if verdict["status"] != "SSH_READY":
+            raise NodeHostError("Нужна свежая успешная проверка SSH из РФ и трёх стран")
         profile = db.get(Integration, profile_id)
         if not profile or profile.kind != "telemt_profile":
             raise NodeHostError("Нет зашифрованного профиля Telemt")
         data = decrypt(profile)
         tls_lineage_id = profile.metadata_json.get("tls_lineage_id")
-    if data.get("domain") != "pl.vetka.rest":
-        raise NodeHostError("Для этой версии разрешён только pl.vetka.rest")
+    try:
+        domain = managed_record(data.get("domain", ""))
+        mode = data.get("proxy_mode", DEFAULT_MODE)
+        mode_settings(mode)
+        if not domain:
+            raise ValueError("Нет поддомена")
+    except ValueError:
+        raise NodeHostError("Недопустимый поддомен или режим профиля") from None
     patch_profile(
         '[general]\nad_tag=""\n[access.users]\nhello=""\n',
         data["secret"],
         data["ad_tag"],
     )
-    source, digest = await installer()
+    source, digest = await installer(mode)
     unit = "autoip-vps-" + operation_id
     async with await connect(credential_id) as connection:
         # DNS must already point at the candidate before running Let's Encrypt.
@@ -226,7 +282,7 @@ async def start_install(credential_id, profile_id, operation_id, *, approved=Fal
             raise NodeHostError(
                 "VPS не чистый или установка уже запускалась; нужна сверка"
             )
-        if tls_lineage_id:
+        if tls_lineage_id and mode == DEFAULT_MODE:
             from .vps_certificates import restore
 
             await restore(connection, tls_lineage_id)
@@ -235,18 +291,26 @@ async def start_install(credential_id, profile_id, operation_id, *, approved=Fal
                 "deploy.sh": source,
                 "profile.json": json.dumps(data).encode(),
                 "apply.py": remote_patch_program().encode(),
+                "mode.json": json.dumps(
+                    {"proxy_mode": mode, "domain": domain}
+                ).encode(),
             }.items():
                 async with sftp.open("/var/lib/autoip-vps/" + name, "wb") as file:
                     await file.write(content)
                 await sftp.chmod("/var/lib/autoip-vps/" + name, 0o600)
+        script = (
+            "umask 077; exec > /var/lib/autoip-vps/install.log 2>&1; "
+            "bash /var/lib/autoip-vps/deploy.sh "
+            + shlex.quote(domain)
+            + " </dev/null && "
+            "python3 /var/lib/autoip-vps/apply.py && "
+            "touch /var/lib/autoip-vps/succeeded"
+        )
         command = (
             "umask 077; systemd-run --unit="
             + unit
             + " --property=Type=exec /bin/bash -c "
-            "'umask 077; exec > /var/lib/autoip-vps/install.log 2>&1; "
-            "bash /var/lib/autoip-vps/deploy.sh pl.vetka.rest && "
-            "python3 /var/lib/autoip-vps/apply.py && "
-            "touch /var/lib/autoip-vps/succeeded'"
+            + shlex.quote(script)
         )
         result = await connection.run(command, timeout=20, check=False)
         if result.exit_status:
@@ -255,16 +319,32 @@ async def start_install(credential_id, profile_id, operation_id, *, approved=Fal
             )
     return {
         "unit": unit,
-        "installer_commit": INSTALLER_COMMIT,
+        "installer_commit": MTPROTO_INSTALLER_COMMIT
+        if mode == FAKETLS_MODE
+        else INSTALLER_COMMIT,
         "installer_sha256": digest,
+        **mode_settings(mode),
     }
 
 
 async def install_status(credential_id):
     async with await connect(credential_id) as connection:
+        program = """import json,pathlib,subprocess,tomllib
+root=pathlib.Path('/var/lib/autoip-vps')
+mode=json.loads((root/'mode.json').read_text()).get('proxy_mode') if (root/'mode.json').is_file() else 'web_mtproto'
+assert mode in ('web_mtproto','mtproto_faketls')
+assert (root/'succeeded').is_file()
+assert subprocess.run(['systemctl','is-active','--quiet','telemt']).returncode==0
+if mode=='web_mtproto':
+ assert subprocess.run(['systemctl','is-active','--quiet','nginx']).returncode==0
+else:
+ c=tomllib.loads(pathlib.Path('/etc/telemt/telemt.toml').read_text())
+ assert c['server']['port']==443 and c['general']['modes']['tls'] is True and 'web' not in c
+ assert c['censorship']['tls_domain']=='www.booking.com'
+"""
         result = await connection.run(
-            "test -f /var/lib/autoip-vps/succeeded && systemctl is-active --quiet telemt && "
-            "systemctl is-active --quiet nginx",
+            "python3 -",
+            input=program,
             timeout=15,
             check=False,
         )

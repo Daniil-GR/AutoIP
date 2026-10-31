@@ -52,6 +52,7 @@ from .services import (
     set_paused,
 )
 from .vault import VaultError, cipher, decrypt, encrypt
+from .proxy_modes import ProxyMode, DEFAULT_MODE
 
 bearer = HTTPBearer()
 STATIC = Path(__file__).parent / "static"
@@ -231,6 +232,7 @@ def list_agents(actor=Depends(admin), db: Session = Depends(get_db)):
 
 class TicketRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100)
+    proxy_mode: ProxyMode = DEFAULT_MODE
 
 
 class AgentEnroll(BaseModel):
@@ -290,6 +292,12 @@ def issue_ticket(
         expires_at=utcnow() + timedelta(minutes=15),
     )
     db.add(ticket)
+    db.flush()
+    db.add(
+        SystemSetting(
+            key="enroll-mode:" + ticket.id, value={"proxy_mode": body.proxy_mode}
+        )
+    )
     audit(db, actor, "enrollment_created", body.name)
     db.commit()
     return {
@@ -297,6 +305,7 @@ def issue_ticket(
         "token": token,
         "expires_in_seconds": 900,
         "name": body.name,
+        "proxy_mode": body.proxy_mode,
         "commander_url": settings.public_url,
         "repository": "https://github.com/Daniil-GR/AutoIP.git",
         "agent_git_ref": settings.agent_git_ref,
@@ -330,13 +339,18 @@ def enroll(body: AgentEnroll, db: Session = Depends(get_db)):
     if db.scalar(select(Agent).where(Agent.machine_id == body.machine_id)):
         raise HTTPException(409, "Сервер уже зарегистрирован")
     token = secrets.token_urlsafe(48)
+    mode_row = db.get(SystemSetting, "enroll-mode:" + ticket.id)
+    config = AgentConfiguration(
+        dns_zone=get_policy(db).default_dns_zone,
+        proxy_mode=mode_row.value["proxy_mode"] if mode_row else DEFAULT_MODE,
+    ).model_dump()
     agent = Agent(
         name=ticket.name,
         token_hash=digest(token),
         machine_id=body.machine_id,
         facts=body.facts,
         last_seen=utcnow(),
-        configuration={"dns_zone": get_policy(db).default_dns_zone},
+        configuration=config,
     )
     ticket.used_at = utcnow()
     db.add(agent)
@@ -346,6 +360,8 @@ def enroll(body: AgentEnroll, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(409, "Сервер уже зарегистрирован") from None
     ticket.agent_id = agent.id
+    if mode_row:
+        db.delete(mode_row)
     audit(db, "agent", "enrolled", agent.id)
     db.commit()
     return {"agent_id": agent.id, "agent_token": token}
@@ -558,6 +574,15 @@ def set_configuration(
     db: Session = Depends(get_db),
 ):
     agent = require_agent(db, agent_id, lock=True)
+    if body.proxy_mode != (agent.configuration or {}).get(
+        "proxy_mode", DEFAULT_MODE
+    ) and (
+        agent.facts.get("config_found") or agent.facts.get("telemt_service") == "active"
+    ):
+        raise HTTPException(
+            409,
+            "Режим действующей ноды нельзя изменить настройкой Commander. Выберите режим для новой ноды.",
+        )
     for identifier, kind in [
         (body.cherry_integration_id, "cherry"),
         (body.dns_integration_id, "dynadot"),
@@ -570,6 +595,16 @@ def set_configuration(
         integration = db.get(Integration, identifier) if identifier else None
         if identifier and (not integration or integration.kind != kind):
             raise HTTPException(422, "Неверная привязка интеграции")
+        if identifier and kind == "telemt_profile":
+            profile = decrypt(integration)
+            if profile.get("proxy_mode", DEFAULT_MODE) != body.proxy_mode:
+                raise HTTPException(
+                    422, "Режим профиля Telemt не совпадает с режимом ноды"
+                )
+            if body.dns_record and profile["domain"] != body.dns_record:
+                raise HTTPException(
+                    422, "Поддомен профиля Telemt не совпадает с DNS-записью ноды"
+                )
     if body.management_ip and body.management_ip == body.floating_ip:
         raise HTTPException(422, "Management IP должен отличаться от Floating IP")
     if (

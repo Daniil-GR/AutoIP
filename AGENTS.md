@@ -87,3 +87,14 @@ and buying Netherlands with 1 vCPU / 2 GB / 25 GB, Ubuntu 24.04, one day.
 Netherlands is offered under the 10 Gbps menu. Keep the existing hostname,
 secrets and the separate Polish source VPS. Record actual deletion/refund
 outcomes; a financial or destructive callback must never be blindly repeated.
+
+## Proxy protocol selection, 2026-10-31
+
+The owner requested a second protocol mode for new proxies: MTProto-only
+FakeTLS on port 443, separate from the existing Web + MTProto 9443 mode.
+Preserve existing nodes and their protocol. The selected new TelemtProxy
+MTProto installer uses SNI www.booking.com. Store the chosen mode per agent
+and encrypted profile; retain domain/hello/ad_tag across VPS replacements.
+The next subdomain, hello and ad_tag will be supplied later through secure
+settings. This request does not authorize installing on an existing node,
+changing DNS, buying a server, or enabling a new paid automation mode.

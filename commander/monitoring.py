@@ -21,6 +21,7 @@ from .mtproto_checker import MTProtoChecker, unavailable
 from .policy import get_policy
 from .services import request_sni_check
 from .vault import decrypt
+from .proxy_modes import DEFAULT_MODE, FAKETLS_MODE, FAKETLS_SNI
 
 
 def rate_slot(db, identifier, now=None):
@@ -74,21 +75,37 @@ async def checker_report(agent_id, target, port):
             identifier = config.get("checker_integration_id")
             integration = db.get(Integration, identifier) if identifier else None
             secret_id = config.get("mtproto_integration_id")
+            if not secret_id:
+                secret_id = config.get("vps_profile_integration_id")
             secret = db.get(Integration, secret_id) if secret_id else None
             if (
                 not integration
                 or integration.kind != "mtproto_checker"
                 or not secret
-                or secret.kind != "mtproto"
+                or secret.kind not in ("mtproto", "telemt_profile")
             ):
                 return unavailable("not_configured")
             api_key = decrypt(integration)["api_key"]
+            secret_data = decrypt(secret)
+            mode = config.get("proxy_mode", DEFAULT_MODE)
+            if secret.kind == "telemt_profile" and (
+                secret_data.get("proxy_mode", DEFAULT_MODE) != mode
+                or secret_data.get("domain")
+                != (config.get("dns_record") or agent.public_host)
+            ):
+                return unavailable("configuration_error")
+            if mode == FAKETLS_MODE and port != 443:
+                return unavailable("configuration_error")
             quota_id = hashlib.sha256(api_key.encode()).hexdigest()[:32]
             checker = MTProtoChecker(
                 api_key,
-                decrypt(secret)["secret"],
-                config.get("sni_domain") or agent.facts.get("tls_domain", ""),
-                config.get("mtproto_secret_format", "dd"),
+                secret_data["secret"],
+                FAKETLS_SNI
+                if mode == FAKETLS_MODE
+                else config.get("sni_domain") or agent.facts.get("tls_domain", ""),
+                "ee"
+                if mode == FAKETLS_MODE
+                else config.get("mtproto_secret_format", "dd"),
             )
             allowed, seconds = rate_slot(db, quota_id)
             db.commit()
@@ -169,7 +186,7 @@ async def collect_agent(agent_id, host, port, ip):
         config = dict(db.get(Agent, agent_id).configuration or {})
 
     async def web_check():
-        if not config.get("web_proxy_host"):
+        if config.get("proxy_mode") == FAKETLS_MODE or not config.get("web_proxy_host"):
             return None
         return await CheckHost().check(
             config["web_proxy_host"],
