@@ -193,7 +193,12 @@ def stop(identifier, reason):
         recovered = bool(dns_result and dns_result.value.get("stage") == "SUCCEEDED")
         r.status = "SUCCEEDED" if recovered else "MANUAL_REQUIRED"
         row = db.get(SystemSetting, state_key(identifier))
-        row.value = {**row.value, "stage": "MANUAL_REQUIRED", "reason": reason}
+        row.value = {
+            **row.value,
+            "stage": "MANUAL_REQUIRED",
+            "reason": reason,
+            "updated_at": utcnow().isoformat(),
+        }
         p = db.get(SystemSetting, policy_key(r.agent_id))
         if p:
             p.value = {**p.value, "enabled": False, "stopped_by": identifier}
@@ -682,6 +687,7 @@ async def step(identifier):
             new=result["ipv4"],
             candidates=candidates,
             candidate_failures=[],
+            candidate_unknown_since=None,
         )
     elif stage == "ATTACH":
         if not await detach_rejected(identifier, s):
@@ -693,14 +699,30 @@ async def step(identifier):
             save(
                 identifier,
                 "CANDIDATE_VERIFY",
+                candidate_verify_started_at=utcnow().isoformat(),
                 configured=list(
                     dict.fromkeys([*s.get("configured", []), s["resource_id"]])
                 ),
             )
     elif stage == "CANDIDATE_VERIFY":
+        started = s.get("candidate_verify_started_at")
+        if started and utcnow() - aware(datetime.fromisoformat(started)) >= timedelta(
+            minutes=8
+        ):
+            stop(
+                identifier,
+                "Истекло безопасное окно проверки временного IP; требуется сверка сети",
+            )
+            return
         report = await rr.protocol_verification(s["agent_id"], s["new"], s["port"])
         if report.get("mtproto_verified"):
-            save(identifier, "NETWORK_COMMIT", candidate_proof=report)
+            save(
+                identifier,
+                "NETWORK_COMMIT",
+                candidate_proof=report,
+                candidate_last_report=report,
+                candidate_unknown_since=None,
+            )
         elif report.get("provider_status") in ("RKN_BLOCK", "DATA_CUT"):
             failures = [
                 item
@@ -720,7 +742,12 @@ async def step(identifier):
             )
             if len(failures) < 3:
                 save(
-                    identifier, stage, candidate_failures=failures, next_at=next_at(60)
+                    identifier,
+                    stage,
+                    candidate_failures=failures,
+                    candidate_last_report=report,
+                    candidate_unknown_since=None,
+                    next_at=next_at(60),
                 )
                 return
             with SessionLocal() as db:
@@ -734,14 +761,36 @@ async def step(identifier):
                 "ORDER",
                 order_id=None,
                 candidate_failures=failures,
+                candidate_last_report=report,
+                candidate_unknown_since=None,
                 next_at=next_at(30),
             )
         else:
-            # Do not purchase on inconclusive or externally degraded checks.
-            stop(
+            # A monitoring outage is neither a blocked candidate nor a reason
+            # to disarm the whole node immediately. Retry this same paid IP.
+            since = s.get("candidate_unknown_since") or utcnow().isoformat()
+            save(
                 identifier,
-                "Не удалось доказать работоспособность кандидата; требуется сверка",
+                stage,
+                candidate_last_report=report,
+                candidate_unknown_since=since,
+                next_at=next_at(60),
             )
+            if utcnow() - aware(datetime.fromisoformat(since)) >= timedelta(minutes=3):
+                stop(
+                    identifier,
+                    "Проверка кандидата остаётся неопределённой 3 минуты; требуется сверка",
+                )
+            elif not s.get("candidate_unknown_since"):
+                with SessionLocal() as db:
+                    db.add(
+                        Notification(
+                            topic="recovery",
+                            target=identifier,
+                            text="Проверка нового IP дала неопределённый результат. Повторим проверку этого же адреса через минуту; новые покупки и DNS-переход пока не выполняются.",
+                        )
+                    )
+                    db.commit()
     elif stage == "NETWORK_COMMIT":
         if network_job(identifier, s, "commit", s["resource_id"]):
             save(identifier, "DNS_HANDOFF")

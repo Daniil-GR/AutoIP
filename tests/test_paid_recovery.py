@@ -682,3 +682,84 @@ def test_cleanup_waits_for_cached_deleted_resource_without_second_delete(
     ).released_at
     assert paid.load(recovery.id)["delete_requests"][rid]["status"] == "released"
     assert len(deletes) == 1
+
+
+def test_unknown_candidate_is_retried_without_disarming_or_buying(
+    db, paid_env, monkeypatch
+):
+    a, _ = paid_env
+    recovery = start(db, a)
+    paid.save(recovery.id, "CANDIDATE_VERIFY", resource_id=RESOURCE, new=NEW)
+    replies = iter(
+        [
+            {
+                "status": "unknown",
+                "error": "inconsistent_response",
+                "mtproto_verified": False,
+            },
+            {"status": "observed", "provider_status": "OK", "mtproto_verified": True},
+        ]
+    )
+
+    async def protocol(*args):
+        return next(replies)
+
+    monkeypatch.setattr(rr, "protocol_verification", protocol)
+    asyncio.run(paid.step(recovery.id))
+    state = paid.load(recovery.id)
+    assert state["stage"] == "CANDIDATE_VERIFY"
+    assert state["candidate_last_report"]["error"] == "inconsistent_response"
+    db.expire_all()
+    assert paid.enabled(db, a.id)
+    assert db.get(Recovery, recovery.id).status == "PAID_RUNNING"
+    asyncio.run(paid.step(recovery.id))
+    assert paid.load(recovery.id)["stage"] == "NETWORK_COMMIT"
+    assert paid.load(recovery.id)["candidate_unknown_since"] is None
+
+
+def test_prolonged_unknown_stops_before_network_rollback_deadline(
+    db, paid_env, monkeypatch
+):
+    a, _ = paid_env
+    recovery = start(db, a)
+    now = utcnow()
+    paid.save(
+        recovery.id,
+        "CANDIDATE_VERIFY",
+        resource_id=RESOURCE,
+        new=NEW,
+        candidate_unknown_since=(now - timedelta(minutes=3)).isoformat(),
+    )
+
+    async def protocol(*args):
+        return {
+            "status": "unknown",
+            "error": "provider_unavailable",
+            "mtproto_verified": False,
+        }
+
+    monkeypatch.setattr(rr, "protocol_verification", protocol)
+    asyncio.run(paid.step(recovery.id))
+    state = paid.load(recovery.id)
+    assert state["stage"] == "MANUAL_REQUIRED"
+    assert state["candidate_last_report"]["error"] == "provider_unavailable"
+    assert "order_id" not in state
+
+
+def test_candidate_window_cannot_outlive_temporary_network(db, paid_env, monkeypatch):
+    a, _ = paid_env
+    recovery = start(db, a)
+    paid.save(
+        recovery.id,
+        "CANDIDATE_VERIFY",
+        resource_id=RESOURCE,
+        new=NEW,
+        candidate_verify_started_at=(utcnow() - timedelta(minutes=8)).isoformat(),
+    )
+
+    async def forbidden(*args):
+        raise AssertionError("Expired staging must not be verified or committed")
+
+    monkeypatch.setattr(rr, "protocol_verification", forbidden)
+    asyncio.run(paid.step(recovery.id))
+    assert paid.load(recovery.id)["stage"] == "MANUAL_REQUIRED"
