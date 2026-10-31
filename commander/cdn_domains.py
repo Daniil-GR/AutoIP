@@ -41,7 +41,9 @@ LABELS = {
 
 
 class AliasError(RuntimeError):
-    pass
+    def __init__(self, message, provider_status=None):
+        self.provider_status = provider_status
+        super().__init__(message)
 
 
 def hostname(value):
@@ -261,11 +263,22 @@ class CnameDNS(DNSPilot):
                             self.api_key, self.api_secret, path, rid, body
                         ),
                         "Content-Type": "application/json",
+                        "Accept": "application/json",
                     },
                 )
                 r.raise_for_status()
-                if str(r.json().get("code")) != "200":
-                    raise AliasError("Dynadot не подтвердил добавление CNAME")
+                code = r.json().get("code")
+                if str(code) != "200":
+                    status = (
+                        int(code)
+                        if str(code).isdigit() and 100 <= int(code) <= 599
+                        else None
+                    )
+                    raise AliasError(
+                        "Dynadot не подтвердил добавление CNAME"
+                        + (f"; код {status}" if status else ""),
+                        status,
+                    )
         except (httpx.HTTPError, ValueError):
             raise AliasError(
                 "Результат добавления CNAME неопределён; повтор запрещён до сверки"

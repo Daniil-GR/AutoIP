@@ -117,6 +117,8 @@ def test_cname_appends_only_one_record_and_reconciles(monkeypatch):
     def handle(request):
         calls.append(request)
         assert request.method == "POST"
+        # Dynadot returns HTTP 200 / envelope code 400 for the default Accept: */*.
+        assert request.headers["Accept"] == "application/json"
         body = __import__("json").loads(request.content)
         assert body == {
             "dns_sub_list": [record],
