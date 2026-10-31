@@ -16,6 +16,10 @@ log = logging.getLogger(__name__)
 
 
 async def tick():
+    from .cdn_domains import tick as cdn_tick
+
+    if await cdn_tick():
+        return True
     from .reserve_recovery import tick as recovery_tick
 
     from .paid_recovery import tick as paid_tick
@@ -30,11 +34,12 @@ async def tick():
         task = db.scalar(
             select(ControlTask)
             .where(
+                ControlTask.kind != "cdn_alias",
                 or_(
                     ControlTask.status == "queued",
                     (ControlTask.status == "running")
                     & (ControlTask.leased_at < utcnow() - timedelta(minutes=5)),
-                )
+                ),
             )
             .order_by(ControlTask.created_at)
             .with_for_update(skip_locked=True)

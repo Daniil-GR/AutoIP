@@ -25,6 +25,7 @@ from .database import (
     Audit,
     BotAction,
     Check,
+    ControlTask,
     Delivery,
     FloatingIP,
     Incident,
@@ -73,6 +74,8 @@ NAVIGATION_ACTIONS = frozenset(
         "recovery_status",
         "prepare_sni",
         "prepare_recovery",
+        "cdn_domains",
+        "cdn_status",
     }
     | {"agent:" + mode for mode in ("agents", "checks", "recovery", "automation")}
     | {"page:" + mode for mode in ("agents", "checks", "recovery", "automation")}
@@ -167,6 +170,7 @@ def menu(db, user_id):
         ("🔄 Восстановление прокси", "recovery"),
         ("🌐 Floating IP", "ips"),
         ("▣ VPS Node Host", "vps"),
+        ("🌐 Поддомены CDN", "cdn_domains"),
         ("💰 Расходы", "costs"),
         ("📜 История операций", "history"),
         ("⚙️ Настройки автоматизации", "automation"),
@@ -403,12 +407,81 @@ async def open_agents(message: Message):
     await message.answer("Выберите агента", reply_markup=markup)
 
 
+def cdn_task_view(db, user_id, task):
+    from .cdn_domains import status_text
+
+    text = status_text(task)
+    rows = []
+    if task.status == "draft":
+        text += "\n\nСоздать CNAME, добавить имя в Gcore, дождаться сертификата и применить Nginx/Telemt? Возможен краткий перерыв при перезапуске Telemt. Новые платные ресурсы не создаются."
+        rows.append(
+            [button(db, user_id, "✅ Создать и настроить", "cdn_confirm", task.id, 15)]
+        )
+    if task.status == "manual":
+        rows.append([button(db, user_id, "Повторить сверку", "cdn_retry", task.id, 15)])
+    if task.status in ("draft", "queued", "manual"):
+        rows.append(
+            [
+                button(
+                    db,
+                    user_id,
+                    "Остановить; сохранить настройки",
+                    "cdn_stop",
+                    task.id,
+                    15,
+                )
+            ]
+        )
+    rows += [
+        [button(db, user_id, "🔄 Обновить", "cdn_status", task.id)],
+        [button(db, user_id, "← Поддомены CDN", "cdn_domains")],
+    ]
+    return text, keyboard(rows)
+
+
+@router.message(F.text)
+async def cdn_name_input(message: Message):
+    from datetime import datetime
+    from .cdn_domains import AliasError, create
+
+    user_id = message.from_user.id
+    with SessionLocal() as db:
+        pending = db.get(
+            SystemSetting, "cdn-input:" + str(user_id), with_for_update=True
+        )
+        if not pending:
+            return
+        if (
+            message.text == "/cancel"
+            or aware(datetime.fromisoformat(pending.value["expires"])) <= utcnow()
+        ):
+            db.delete(pending)
+            db.commit()
+            await message.answer("Ввод поддомена отменён.")
+            return
+        try:
+            task = create(db, pending.value["agent_id"], message.text, user_id)
+            db.flush()
+            text, markup = cdn_task_view(db, user_id, task)
+        except (AliasError, ValueError) as exc:
+            await message.answer(str(exc))
+            return
+        db.delete(pending)
+        db.commit()
+    await message.answer(text, reply_markup=markup)
+
+
 @router.callback_query(F.data.startswith("a:"))
 async def callback(query: CallbackQuery):
     try:
         with SessionLocal() as db:
             action = consume_action(db, query.from_user.id, query.data[2:])
-            text, markup = dispatch_action(db, query.from_user.id, action)
+            from .cdn_domains import AliasError
+
+            try:
+                text, markup = dispatch_action(db, query.from_user.id, action)
+            except (AliasError, ValueError) as exc:
+                raise HTTPException(409, str(exc)) from None
             db.commit()
         await query.answer()
         try:
@@ -432,7 +505,87 @@ def dispatch_action(db, user_id, item):
     action, target = item.action, item.target
     text = "AutoIP Commander"
     markup = None
-    if action == "menu":
+    if action == "cdn_domains":
+        from .cdn_domains import KIND
+
+        rows = []
+        for agent in db.scalars(select(Agent).where(Agent.revoked.is_(False))):
+            if db.get(SystemSetting, "cdn-bind:" + agent.id):
+                rows.append(
+                    [button(db, user_id, "➕ " + agent.name, "cdn_input", agent.id)]
+                )
+        for task in db.scalars(
+            select(ControlTask)
+            .where(ControlTask.kind == KIND)
+            .order_by(ControlTask.created_at.desc())
+            .limit(8)
+        ):
+            rows.append(
+                [button(db, user_id, task.payload["hostname"], "cdn_status", task.id)]
+            )
+        rows.append([button(db, user_id, "🏠 Меню", "menu")])
+        return (
+            "🌐 Поддомены CDN\nВыберите ноду, чтобы добавить свободное имя. Существующие DNS-записи не заменяются.",
+            keyboard(rows),
+        )
+    elif action == "cdn_input":
+        from .cdn_domains import binding
+
+        binding(db, target)
+        key = "cdn-input:" + str(user_id)
+        pending = db.get(SystemSetting, key)
+        value = {
+            "agent_id": target,
+            "expires": (utcnow() + timedelta(minutes=15)).isoformat(),
+        }
+        if pending:
+            pending.value = value
+        else:
+            db.add(SystemSetting(key=key, value=value))
+        return (
+            "Отправьте новое имя, например lt1.vetka.rest. Можно написать только lt1. Для отмены отправьте /cancel. Ключи и пароли сюда не отправляйте.",
+            None,
+        )
+    elif action == "cdn_confirm":
+        from .cdn_domains import confirm
+
+        task = confirm(db, target, user_id)
+        return cdn_task_view(db, user_id, task)
+    elif action == "cdn_status":
+        return cdn_task_view(db, user_id, db.get(ControlTask, target))
+    elif action in ("cdn_retry", "cdn_stop"):
+        from .cdn_domains import AliasError, KIND
+
+        task = db.get(ControlTask, target, with_for_update=True)
+        if not task or task.kind != KIND or task.payload["user_id"] != str(user_id):
+            raise AliasError("Операция недоступна")
+        if action == "cdn_retry":
+            if task.status != "manual":
+                raise AliasError("Операция уже выполняется или завершена")
+            task.status = "queued"
+            task.payload = {
+                **task.payload,
+                "next_at": None,
+                "deadline": (utcnow() + timedelta(hours=1)).isoformat(),
+            }
+            task.result = {}
+        else:
+            if task.status not in ("draft", "queued", "manual"):
+                raise AliasError(
+                    "Этап выполняется; обновите статус после его завершения"
+                )
+            task.status = "cancelled"
+            task.result = {
+                "message": "Остановка подтверждена. Уже добавленные DNS/CDN-имена сохранены; автоматического удаления нет."
+            }
+        from .security import audit
+
+        audit(db, actor, action, target)
+        return cdn_task_view(db, user_id, task)
+    elif action == "menu":
+        pending = db.get(SystemSetting, "cdn-input:" + str(user_id))
+        if pending:
+            db.delete(pending)
         markup = menu(db, user_id)
     elif action == "status":
         agents = db.scalars(select(Agent).where(Agent.revoked.is_(False))).all()
@@ -685,6 +838,10 @@ async def deliver(bot):
                                         )
                                     ]
                                 ]
+                            )
+                        if topic == "cdn_alias" and db.get(ControlTask, target):
+                            _, markup = cdn_task_view(
+                                db, user_id, db.get(ControlTask, target)
                             )
                         db.commit()
                     try:
